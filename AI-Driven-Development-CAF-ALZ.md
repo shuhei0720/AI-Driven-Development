@@ -1099,14 +1099,16 @@ Microsoftの推奨はALZ IaC AcceleratorとAzure Verified Modules（AVM）を使
 | 対象 | 新規のPlatform Landing Zone全体。管理グループ・Policy・RBAC・共通ネットワーク・監視 |
 | リージョン | 東日本（japaneast）の単一リージョン |
 | 管理グループ | 公式ALZ標準を基準。Management・Connectivity・Identity・Securityのサブスクリプション分割を含める |
-| Policy | 公式ALZ標準セットを基準にする |
+| Policy | 公式ALZ標準セットを基準にする。拒否・変更・自動配置などを行う効果（Deny・DINE等）の実効性試験を必須にする |
 | ネットワーク | Hub-Spoke。Azure Firewall・Private DNS・DNS Private Resolver・Azure Bastion・ExpressRouteを含める |
 | Spoke間通信 | Firewallを経由し、明示的に許可した通信だけを通す |
 | ExpressRouteの試験 | 開通済み試験回線を保持し、Azure側のGateway・Connection等を毎回作成・削除する |
 | E2E環境 | 別テナントに試験用基盤を用意し、試験時に作成、検証後に削除する |
+| E2Eのゲート | PRごとに実Azureで実行し、成功をマージ条件にする |
+| 固定の土台 | 試験テナント・サブスクリプション・実行用ID・state保存先・開通済み回線は保持し、その中に今回作成したALZリソースを削除する |
 | アドレス | 次節のHub・2本の試験用Spoke・オンプレ側のサンプルアドレスを採用 |
 
-固定で保持する土台と毎回削除するリソースの詳細、Policy実効性試験の初期範囲、CIの実行・マージ条件はヒアリング中。
+残る設計値は、サービスのSKU、オンプレ通信の経路、ログ保持・通知、実試験の費用・待機時間上限など。実環境のIDやアドレスの重複確認は、試験環境設定時に扱う。
 
 ### 10. 合意したサンプルアドレス案
 
@@ -1134,23 +1136,53 @@ ExpressRoute回線の開通・廃止には事業者側の工程があるため�
 
 参照：[ExpressRouteの開通と状態](https://learn.microsoft.com/en-us/azure/expressroute/expressroute-workflows)
 
-### 11. 受け入れテストの具体化方針
+### 11. 受け入れ条件とテスト一覧
 
-以下は合意した目的から作るテスト一覧の骨格。対象Policy・パラメータ・権限・通信条件を確定してから、ケースごとの期待値を人間と確認する。
+期待値の正本は、合意した要件・構成契約・Policy一覧とする。Terraformの出力や実装コードをそのまま期待値へ転記しない。次のIDをケース設計の起点とし、具体的なPolicy IDや対象リソースを確定してケースを展開する。
 
-| 対象 | 構成を確認するテスト | 実Azureで効果を確認するテスト |
+| テストID | 対象 | 合格条件 |
 | --- | --- | --- |
-| デプロイ | 作成対象、名前、配置、入力制約、構成値 | 管理グループ階層、Policy・RBAC、ネットワーク、監視の実状態を要件と照合 |
-| Policy割当 | 定義、パラメータ、scope、enforcement、除外 | 実際の割当と継承が期待どおりであること |
-| Deny | 許可・違反入力の組み合わせ | 同じID・操作で許可ケースが成功し、違反ケースが期待するPolicyによって拒否されること |
-| Audit | 検知条件と対象 | 操作は成功し、対象が評価後に非準拠になること |
-| Modify | 変更条件とプロパティ | 書き込み後の実値を確認。既存リソースの修復は別ケース |
-| DeployIfNotExists | 配置条件、設定、実行用権限 | 評価・修復後に期待するリソースと設定値が存在すること |
-| RBAC | principal・role・scope | 試験用IDで、許可する操作が成功し、禁止操作が拒否されること |
-| Firewall・経路 | peering、UDR、Firewallルール | 許可したSpoke間通信の実アプリ応答と、不許可通信の拒否を確認。該当フローのログ・経路も照合 |
-| ExpressRoute・DNS | Gateway、Connection、名前解決の設定 | 開通済み回線を通じた通信とPrivate DNS・オンプレDNS連携の実応答 |
-| 再適用 | 入力変更時の差分 | 再planの差分ゼロ、再apply後のリソースID維持 |
-| 後始末 | 削除対象を試験の作成記録で限定 | 成功・部分失敗の双方で作成物を片付け、残存を検出。外部fixtureは保持 |
+| DEP-01 | デプロイ結果 | Azure APIで取得した管理グループ階層、Policy、RBAC、ネットワーク、監視の実設定が構成契約と一致する |
+| DEP-02 | 再適用 | 同じ入力の再planが差分ゼロ。再applyしてもリソースIDが維持される |
+| POL-01 | 全Policyの構成 | 定義・initiative内の参照・パラメータ・scope・除外・enforcementが期待する一覧と一致する |
+| POL-02 | 拒否系 | 許可ケースの成功と、違反ケースが期待するPolicyによって拒否されることを対で確認する |
+| POL-03 | 変更系 | 有効なModify・Append等が、対象プロパティを期待値へ変更する |
+| POL-04 | 自動配置系 | 有効なDeployIfNotExists等が、評価・修復後に期待するリソースと設定を配置する |
+| IAM-01 | RBAC | 実際のprincipal・role・scopeを確認し、試験用IDで許可操作が成功、禁止操作が拒否される |
+| NET-01 | Spoke間通信 | Firewall経由の明示許可フローは実アプリ応答が成功し、不許可フローは拒否される。経路と該当ログも確認する |
+| NET-02 | ExpressRoute・DNS | 開通済み回線、Gateway・Connection、Private DNS・Resolverを通じた試験先の実応答を確認する |
+| CLN-01 | 後始末 | 成功・部分失敗の双方で試験作成物を削除し、Azure実体の残存を検出。固定の土台と回線は保持する |
+| CI-01 | 対象限定 | 認証tenant、親管理グループ、subscription poolが信頼した試験設定と一致しない場合は実行しない |
+| CI-02 | PRの品質ゲート | 対象PRの最新コミットで、単体・構成・実Azure E2E・後始末が成功した場合だけマージ可能にする |
 
-偽陽性を避けるため、Policyによる拒否をRBACの`AuthorizationFailed`等と区別する。`RequestDisallowedByPolicy`と期待するPolicy IDを照合し、無関係な失敗では合格にしない。非同期の評価・修復には期限を設け、待機切れをskipや成功扱いにしない。通信もTCP接続だけでなく、制御した宛先の実アプリ応答まで確認する。
+#### Policyの必須試験範囲
+
+- 全割当の構成整合確認は必須とする。
+- 有効な拒否・変更・自動配置の効果（Deny、DenyAction、Modify、Append、DeployIfNotExists等）は実効性試験を必須とする。実際に採用する効果についてケースを作る。
+- Audit・AuditIfNotExists等の検知系は構成整合確認を必須とし、実動作の検証は初期版の必須ゲートには含めない。
+- 無効化・除外・非強制モードも構成契約と照合する。試験を通す目的でPolicyを無効化しない。
+- Policy一覧にはassignment、definition／initiative reference、実効effect、対象scope、正常・違反fixture、期待結果、テストIDを対応づける。未対応の必須ケースをskipで完了扱いにしない。
+
+#### 偽陽性を避ける条件
+
+- Policyの拒否は`RequestDisallowedByPolicy`等の期待する応答とPolicy IDを確認する。`AuthorizationFailed`、入力不備、API障害を合格にしない。
+- 許可・違反ケースは同じID・同じ操作を基本とし、検証対象の条件だけを変える。
+- 非同期の評価・修復には期限を設ける。待機切れは失敗とし、skipや成功へ変換しない。
+- 通信はTCP接続成功だけでなく、制御した宛先の実アプリ応答まで確認する。不許可通信も、宛先未起動など別の原因による失敗と区別する。
+- 認証・接続・fixtureの不足は試験環境の不備として報告し、実装の振る舞いを確認したRedには数えない。
+
+### 12. TDDとCIの設計方針
+
+1. 受け入れ条件をテストケースへ展開し、人間が期待値と抜けを確認する。
+2. 1件ずつテストを書き、意図した理由のRedを確認してから最小実装する。
+3. Greenを保って整理し、必要な単体・構成テストを回す。
+4. PRごとに専用テナントで実Azure E2Eを実行する。
+5. 後始末と残存確認を行い、結果・Policy ID・実状態の証跡を記録する。
+6. 最新コミットの必須テストと後始末が成功してからマージする。
+
+共有subscription poolを使う実E2Eは、pool単位で排他する実装案とする。runごとのstate分離だけでは、サブスクリプション配置の競合を防げない。実行中の試験を新しいPRのために自動中断せず、待機runが取消・置換された場合も成功扱いにしない。
+
+固定サブスクリプションは、今回作成した管理グループの削除前に、固定の待避先へ戻す手順を用意する。後始末はTerraform stateとAzure実体の両方を照合し、Policyが作成したリソースや試験用の操作対象も含めて残存確認する。後始末に失敗した場合はCIを失敗とし、stateと作成記録を保持して復旧できるようにする。
+
+今回の更新は要件・テスト設計の記録。ALZ向けのA.1〜A.5の改稿、Terraform実装、実Azure試験は次の段階で行う。
 
