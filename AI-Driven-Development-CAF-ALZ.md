@@ -1101,14 +1101,16 @@ Microsoftの推奨はALZ IaC AcceleratorとAzure Verified Modules（AVM）を使
 | 管理グループ | 公式ALZ標準を基準。Management・Connectivity・Identity・Securityのサブスクリプション分割を含める |
 | Policy | 公式ALZ標準セットを基準にする。拒否・変更・自動配置などを行う効果（Deny・DINE等）の実効性試験を必須にする |
 | ネットワーク | Hub-Spoke。Azure Firewall・Private DNS・DNS Private Resolver・Azure Bastion・ExpressRouteを含める |
-| Spoke間通信 | Firewallを経由し、明示的に許可した通信だけを通す |
+| 通信経路 | Spoke間とオンプレ↔SpokeはFirewallを経由し、明示的に許可した通信だけを通す |
+| 初期SKU | Azure Firewall Standard、Azure Bastion Standard、ExpressRoute Gateway ErGw1AZ |
+| 有償DDoS | 初期版ではNetwork Protection・IP Protectionを無効にする |
 | ExpressRouteの試験 | 開通済み試験回線を保持し、Azure側のGateway・Connection等を毎回作成・削除する |
 | E2E環境 | 別テナントに試験用基盤を用意し、試験時に作成、検証後に削除する |
 | E2Eのゲート | PRごとに実Azureで実行し、成功をマージ条件にする |
 | 固定の土台 | 試験テナント・サブスクリプション・実行用ID・state保存先・開通済み回線は保持し、その中に今回作成したALZリソースを削除する |
 | アドレス | 次節のHub・2本の試験用Spoke・オンプレ側のサンプルアドレスを採用 |
 
-残る設計値は、サービスのSKU、オンプレ通信の経路、ログ保持・通知、実試験の費用・待機時間上限など。実環境のIDやアドレスの重複確認は、試験環境設定時に扱う。
+残る設計値は、ログ保持・通知、採用Policyごとの試験fixtureなど。費用・時間の初期上限案は第13節に記録する。実環境のIDやアドレスの重複確認は、試験環境設定時に扱う。
 
 ### 10. 合意したサンプルアドレス案
 
@@ -1116,6 +1118,7 @@ Microsoftの推奨はALZ IaC AcceleratorとAzure Verified Modules（AVM）を使
 | --- | --- |
 | Hub VNet | `10.100.0.0/16` |
 | Hub / AzureFirewallSubnet | `10.100.0.0/26` |
+| Hub / AzureFirewallManagementSubnet（管理NIC有効時の追加案） | `10.100.4.0/26` |
 | Hub / AzureBastionSubnet | `10.100.1.0/26` |
 | Hub / GatewaySubnet | `10.100.2.0/26` |
 | Hub / DNS Resolver inbound専用 | `10.100.3.0/28` |
@@ -1128,7 +1131,7 @@ Microsoftの推奨はALZ IaC AcceleratorとAzure Verified Modules（AVM）を使
 | Online / Private Endpoint用 | `10.102.1.0/24` |
 | オンプレ側のサンプル範囲 | `172.20.0.0/16` |
 
-提案内のVNet間の非重複、サブネットの境界・包含・非重複を確認済み。実接続時には、接続先が広告する全範囲との重複を確認する。DNS Resolverの各サブネットは専用とし、必要な委任を設定する。FirewallのSKU・管理NICによって追加サブネットが必要な場合は、SKU決定時に反映する。
+提案内のVNet間の非重複、サブネットの境界・包含・非重複を確認済み。実接続時には、接続先が広告する全範囲との重複を確認する。DNS Resolverの各サブネットは専用とし、必要な委任を設定する。Firewall管理NICをAVM既定どおり有効にする構成案では、上表の管理用サブネットとPublic IPを用意する。
 
 参照：[専用サブネットの要件](https://learn.microsoft.com/en-us/azure/networking/design-guide/vnets-subnets)、[ExpressRoute GatewaySubnet](https://learn.microsoft.com/en-us/azure/expressroute/expressroute-about-virtual-network-gateways)
 
@@ -1143,14 +1146,14 @@ ExpressRoute回線の開通・廃止には事業者側の工程があるため�
 | テストID | 対象 | 合格条件 |
 | --- | --- | --- |
 | DEP-01 | デプロイ結果 | Azure APIで取得した管理グループ階層、Policy、RBAC、ネットワーク、監視の実設定が構成契約と一致する |
-| DEP-02 | 再適用 | 同じ入力の再planが差分ゼロ。再applyしてもリソースIDが維持される |
+| DEP-02 | 再適用 | 試験による変更を戻し、Policyの反映を確認した後、同じ入力の再planが差分ゼロ。再applyしてもリソースIDが維持される |
 | POL-01 | 全Policyの構成 | 定義・initiative内の参照・パラメータ・scope・除外・enforcementが期待する一覧と一致する |
 | POL-02 | 拒否系 | 許可ケースの成功と、違反ケースが期待するPolicyによって拒否されることを対で確認する |
 | POL-03 | 変更系 | 有効なModify・Append等が、対象プロパティを期待値へ変更する |
 | POL-04 | 自動配置系 | 有効なDeployIfNotExists等が、評価・修復後に期待するリソースと設定を配置する |
 | IAM-01 | RBAC | 実際のprincipal・role・scopeを確認し、試験用IDで許可操作が成功、禁止操作が拒否される |
 | NET-01 | Spoke間通信 | Firewall経由の明示許可フローは実アプリ応答が成功し、不許可フローは拒否される。経路と該当ログも確認する |
-| NET-02 | ExpressRoute・DNS | 開通済み回線、Gateway・Connection、Private DNS・Resolverを通じた試験先の実応答を確認する |
+| NET-02 | ExpressRoute・DNS | 開通済み回線とGateway・Connectionを使い、オンプレ↔SpokeがFirewallを経由することと、DNS・試験先の実応答を確認する |
 | CLN-01 | 後始末 | 成功・部分失敗の双方で試験作成物を削除し、Azure実体の残存を検出。固定の土台と回線は保持する |
 | CI-01 | 対象限定 | 認証tenant、親管理グループ、subscription poolが信頼した試験設定と一致しない場合は実行しない |
 | CI-02 | PRの品質ゲート | 対象PRの最新コミットで、単体・構成・実Azure E2E・後始末が成功した場合だけマージ可能にする |
@@ -1185,4 +1188,72 @@ ExpressRoute回線の開通・廃止には事業者側の工程があるため�
 固定サブスクリプションは、今回作成した管理グループの削除前に、固定の待避先へ戻す手順を用意する。後始末はTerraform stateとAzure実体の両方を照合し、Policyが作成したリソースや試験用の操作対象も含めて残存確認する。後始末に失敗した場合はCIを失敗とし、stateと作成記録を保持して復旧できるようにする。
 
 今回の更新は要件・テスト設計の記録。ALZ向けのA.1〜A.5の改稿、Terraform実装、実Azure試験は次の段階で行う。
+
+### 13. 1回のE2E費用・時間の概算と上限案
+
+調査日：2026-11-03（JST）。MicrosoftのAzure Retail Prices APIから取得したJPY参考価格を使う。EA契約単価・割引・税を反映した見積書ではない。
+
+#### 計算の前提
+
+- 東日本、単一Hub、試験用Spoke 2本。Firewall Standard、Bastion Standard（基本2インスタンス）、ErGw1AZ。
+- DNS Private Resolverはinbound 1個、outbound 1個、ruleset 1個。
+- 管理NIC有効のFirewall用Public IP 2個とBastion用1個を仮定。ER GatewayはHOBO方式を前提とし、独立した自作Public IPを重ねて計上しない。
+- 疎通用にLinux B2sを2台仮定する。追加のPolicy試験リソースやprivate runnerは別途積み上げる。
+- 有償DDoS Network Protection・IP Protectionはユーザー指定で無効にする。関連Policyが有償保護を再有効化しないよう、設定・パラメータと必要な例外を明示して構成テストで確認する。ExpressRouteのみを選択したため、VPN Gatewayを併設しない構成を見積り前提とする。AVMの有効フラグは明示する。
+- 作成・試験・削除を含む6時間、各リソースを保持する保守的な単純計算。実際はリソースごとに作成・削除時刻と課金粒度が異なる。
+
+#### 既知の基盤費用
+
+| 項目 | 計算条件 | 1時間あたり | 6時間 |
+| --- | --- | ---: | ---: |
+| Firewall Standard | 1台 | 197.79円 | 1,186.73円 |
+| Bastion Standard | 基本料金に2インスタンスを含む | 45.89円 | 275.32円 |
+| ErGw1AZ | 1台 | 57.12円 | 342.73円 |
+| DNS Resolver | inbound＋outbound＋ruleset、月額を730時間で按分 | 78.57円 | 471.44円 |
+| Standard Public IP | 3個 | 2.37円 | 14.24円 |
+| Linux B2s | 2台 | 17.22円 | 103.29円 |
+| 合計 | ディスク・ログ・転送等を除く | 約399円 | 約2,394円 |
+
+DNS endpointは各28,481.4円／月、rulesetは395.575円／月の参考価格から換算した。Bastionは基本料金を2倍にしない。
+
+別途計上する費用：
+
+- Log Analytics取り込み：有料単価で約528.49円／GB。無料枠を差し引かず、5GBなら約2,642円の例。
+- Private DNS：ゾーン数・query数。ゾーンは日単位の按分なので、単純に6時間だけの時間割りにはしない。
+- VMのディスク、Storage、peering／Firewall処理／ExpressRoute等の転送、必要なCI runner。
+- DINE等の試験で作るVM・SQL・AKS等や、有効化するDefender等。Policy利用自体の料金と分ける。必要な種類・数・保持時間はPolicy別fixture一覧を作ってから算出する。
+- 固定の試験回線・backend等の常設費用は、この1回あたりの増分とは別管理する。
+
+有償DDoSを有効にした場合の参考差額は約638.02円／時、6時間で約3,828円。今回は含めない。公式FAQでは、月の一部だけ有効な場合は利用時間按分とされ、最低1か月料金として計算しない。
+
+#### 初期の運用上限案
+
+| 項目 | 提案 |
+| --- | --- |
+| 1PRの予算枠 | 10,000円／回（暫定案） |
+| 作成 | 最大90分 |
+| Policy・権限・通信・冪等性試験 | 最大120分 |
+| 主処理の余裕 | 30分 |
+| 主処理job | 上記合計で最大4時間 |
+| 後始末job | 主処理と独立させ、失敗時も実行。初期枠2時間 |
+| 全工程の運用目安 | 合計6時間（排他待ちを除く） |
+
+これはMicrosoftの完了保証や、全Policy試験を実測した結果ではない。公式手順でGateway作成は約45分、Bastionは約10分、Firewallは10分以上の場合があることと、Policy反映・DINE遅延等を踏まえた初期の設計値である。
+
+1万円は事前見積り・運用上の予算枠であり、請求額を強制停止する保証ではない。Azure Budget通知だけで費用は止まらず、削除失敗時は課金が継続し得る。主処理のtimeout後も後始末を実行し、後始末失敗時はCI失敗・pool隔離・記録を残して復旧する。
+
+全動作系Policyのfixture費用と実行時間は未確定のため、現時点では総額・全件所要時間を保証できない。試験一覧の展開と初回pilotで、この枠を検証する。上限を超える見込みなら予算・fixtureの組み方を見直し、必須試験のskipで枠に合わせない。
+
+#### 価格と時間の出典
+
+- [Azure Retail Prices APIの説明](https://learn.microsoft.com/en-us/rest/api/cost-management/retail-prices/azure-retail-prices)
+- [東日本FirewallのJPY公開単価](https://prices.azure.com/api/retail/prices?currencyCode=%27JPY%27&%24filter=serviceName%20eq%20%27Azure%20Firewall%27%20and%20armRegionName%20eq%20%27japaneast%27%20and%20priceType%20eq%20%27Consumption%27)
+- [東日本BastionのJPY公開単価](https://prices.azure.com/api/retail/prices?currencyCode=%27JPY%27&%24filter=serviceName%20eq%20%27Azure%20Bastion%27%20and%20armRegionName%20eq%20%27japaneast%27%20and%20priceType%20eq%20%27Consumption%27)
+- [東日本ExpressRouteのJPY公開単価](https://prices.azure.com/api/retail/prices?currencyCode=%27JPY%27&%24filter=serviceName%20eq%20%27ExpressRoute%27%20and%20armRegionName%20eq%20%27japaneast%27%20and%20priceType%20eq%20%27Consumption%27)
+- [DNSのJPY公開単価](https://prices.azure.com/api/retail/prices?currencyCode=%27JPY%27&%24filter=serviceName%20eq%20%27Azure%20DNS%27%20and%20priceType%20eq%20%27Consumption%27)、[DNS課金単位](https://azure.microsoft.com/en-us/pricing/details/dns/)
+- [Bastionの基本インスタンス数](https://azure.microsoft.com/en-us/pricing/details/azure-bastion/)
+- [DDoSの課金FAQ](https://azure.microsoft.com/en-us/pricing/details/ddos-protection/)
+- [Budgetの通知と予算管理](https://learn.microsoft.com/en-us/azure/cost-management-billing/costs/tutorial-acm-create-budgets)
+- [ExpressRoute Gateway作成](https://learn.microsoft.com/en-us/azure/expressroute/expressroute-howto-add-gateway-portal-resource-manager)、[Firewall作成](https://learn.microsoft.com/en-us/azure/firewall/deploy-template)、[Bastion作成](https://learn.microsoft.com/en-us/azure/bastion/quickstart-host-portal)
+- [Policy評価トリガー](https://learn.microsoft.com/en-us/azure/governance/policy/how-to/get-compliance-data)、[DINE評価遅延](https://learn.microsoft.com/en-us/azure/governance/policy/concepts/effect-deploy-if-not-exists)
 
