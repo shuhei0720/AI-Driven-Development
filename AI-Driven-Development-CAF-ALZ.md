@@ -88,7 +88,7 @@ CAFに沿った共通基盤を東日本に構築する。管理グループ・Po
 
 - Terraform 1.12以降と公式AVM（ALZ・Management・Hub-Spoke）、AzureはEA契約
 - GitHub Actions + Bash。認証はユーザー割り当てマネージドIDへのOIDCフェデレーション
-- 単体・結合はTerraform Test、実AzureのE2EはBash＋Terraform CLI＋Azure APIを使う実効性検証
+- 単体・結合はTerraform Test、実AzureのE2EはGo＋Terratest＋testifyで記述する。Azureの実値はCLI／APIで確認する
 
 ## ディレクトリ構成
 
@@ -96,7 +96,7 @@ CAFに沿った共通基盤を東日本に構築する。管理グループ・Po
 - `modules/settings/` — 命名・アドレス・Policyパラメータの純粋な変換
 - `lib/` — 管理グループ階層・archetype・Policyの定義
 - `scripts/` — 実行制御と共通処理
-- `tests/` — 単体テスト（unit/）、結合テスト（integration/）、実AzureのE2E（e2e/）
+- `tests/` — 単体テスト（unit/）、結合テスト（integration/）、実AzureのE2E（e2e/*_test.go）
 - `docs/rules/` — 開発ルール。作業前に下表の該当ファイルを読むこと
 
 ## 主要コマンド
@@ -160,7 +160,7 @@ paths:
 
 - AVM内部のリソースへ直接依存しない。公開されたinput・outputを経由する
   （例：Policyへ渡す監視先IDはManagementの公開outputを使う）
-- workflowに構成定義・Policyロジックを直書きしない。Terraformと試験スクリプトを呼ぶだけにする
+- workflowに構成定義・Policyロジックを直書きしない。TerraformとGoのテスト、準備・後始末のスクリプトを呼ぶだけにする
 - ALZモジュール全体への安易なdepends_onを避け、公式の依存入力とplan時に確定するIDを使う
 
 ## 副作用の分離（Functional Core / Imperative Shell）
@@ -189,9 +189,10 @@ paths:
 | 種別 | ツール | 置き場所 | 実行 | 何を守るか |
 | --- | --- | --- | --- | --- |
 | 単体 | Terraform Test（純粋処理・必要な境界でmock） | `tests/unit/` | `bash scripts/test.sh unit` | 構成値の境界・不正入力・省略時の動作 |
-| E2E | Bash＋Terraform CLI＋Azure API | `tests/e2e/` | `bash scripts/test.sh e2e` | 実配置・Policy効果・通信・冪等性・後始末 |
+| E2E | Go＋Terratest＋testify、Azure CLI／API | `tests/e2e/` | `bash scripts/test.sh e2e` | 実配置・Policy効果・通信・冪等性・後始末 |
 
 - 単体のファイル名は対象の責務を表す（例：`main.connectivity.tf` → `tests/unit/connectivity.tftest.hcl`）
+- E2Eは `tests/e2e/platform_test.go` のように `*_test.go` で置き、`t.Run("期待する動作")` とassertで検証内容を示す
 - E2Eは実行前に固定fixtureの準備と試験テナントへの認証が要る（後述）。各PRで実行し、検証と後始末の成功をマージ条件にする
 
 ## 単体とE2Eの切り分け
@@ -243,8 +244,8 @@ test "$(jq -r '.error.code' deny-response.json)" = "RequestDisallowedByPolicy"
 ## テストの独立性（並列実行対応）
 
 - 各テストが自分専用のデータを作り、終了時に片付ける
-- 他のテストが作ったデータ・実行順序に依存しない。共有poolの実E2Eは直列化する
-- 固定sleepで待たず、期限付きで配置・Policy評価・修復・通信の成立を待つ
+- 他のテストが作ったデータ・実行順序に依存しない。共有poolの実E2Eは直列化し、`t.Parallel()`を使わない
+- 固定sleepで待たず、`require.Eventually`等で期限付きで配置・Policy評価・修復・通信の成立を待つ
 - 識別にはrun ID・resource ID・Policy IDを優先し、表示名に依存しない
 ```
 
@@ -608,6 +609,8 @@ poolを再利用せず記録を残し、解決まで復旧対象として扱う�
 
 ### A.2.1 単体テストの実物
 
+単体はTerraform Testのまま、実AzureのE2EをTerratestへ分ける。単体ではAzureを作らず、入力と期待値を確かめる。
+
 AVMを呼ぶルートと、その入力を組み立てる小さなモジュールを分ける。以下はファイルごとの抜粋である。アドレス計算は実装を動かして検証し、期待値は合意したアドレス表を直接書く。公式モジュール内部を再実装するテストは作らない。
 
 ```hcl
@@ -681,103 +684,175 @@ run "invalid_cidr_is_rejected" {
 
 ### A.2.2 E2Eテストの実物
 
-専用テナントで実際に構築する。「applyが成功した」だけで終えず、Azure APIから読み直した配置と、Policy・通信の動作を確かめる。以下の共通関数は `tests/support/` に置く。`observe-platform.sh` は管理グループ階層、割当・パラメータ、RBAC、監視、ネットワークの実設定を正規化し、仕様から別に作った `expected.json` と照合する。
+E2EはGoのTerratestとtestifyを使う。Vitestの `test("期待する動作")` はGoの `t.Run("期待する動作", ...)`、`expect(actual).toBe(expected)` は `require.Equal(t, expected, actual)` に対応する。`require` が満たされなければ、そのテストを失敗させる。
 
-```bash
-# tests/e2e/platform.sh — 既存のrootを、実Azureへ配置して確かめる
-set -euo pipefail
-source tests/support/run.sh
-assert_test_target
-acquire_pool_lease "$RUN_KEY" # テナント＋固定サブスクリプション群単位
-prepare_run_manifest "$RUN_KEY" # state key・所有範囲・復帰先を先に保存
-seed_existing_policy_targets # DINE修復用の対象はPolicy割当前に作って記録
-terraform init -backend-config="key=e2e/$RUN_KEY.tfstate"
-terraform plan -var-file="$RUN_DIR/test.tfvars" -out="$RUN_DIR/create.tfplan"
-terraform apply "$RUN_DIR/create.tfplan"
+最初に共通基盤を1回デプロイし、動作ごとに名前を付けて確認する。TerraformのoutputはAzureへの照会先IDとして使い、Azureから取得した実値を設計値と比べる。以下の3つのGoファイルは同じ `tests/e2e/` パッケージに置く。
 
-bash scripts/observe-platform.sh > "$RUN_DIR/actual.json"
-diff -u <(jq -S . "$RUN_DIR/expected.json") <(jq -S . "$RUN_DIR/actual.json")
-bash tests/e2e/policy-effects.sh
-bash tests/e2e/network.sh # 許可通信の成功と、非許可通信の不成立を両方検証
-restore_probe_mutations # テスト用リソース・診断設定等を元に戻す
+```go
+// tests/e2e/platform_test.go
+package e2e
 
-# 試験による変更を戻した後、再planに差分がないことまで確かめる
-set +e
-terraform plan -var-file="$RUN_DIR/test.tfvars" -detailed-exitcode \
-  -out="$RUN_DIR/again.tfplan"
-result=$?
-set -e
-test "$result" -eq 0
-# destroyと残存確認は、成功・失敗を問わず別のcleanup jobで実行する
+import (
+	"testing"
+
+	"github.com/gruntwork-io/terratest/modules/terraform"
+	"github.com/stretchr/testify/require"
+)
+
+func TestPlatformE2E(t *testing.T) {
+	assertTestTarget(t)
+	opts := terraformOptions(t, "../..", "platform", "TEST_TFVARS")
+	terraform.InitAndApply(t, opts)
+	// ALZ全体の削除は独立cleanup jobが担当する（A.2.4）。
+
+	t.Run("Bastionのサブネットが設計どおり", func(t *testing.T) {
+		id := terraform.Output(t, opts, "bastion_subnet_id")
+		actual := az(t, "network", "vnet", "subnet", "show", "--ids", id,
+			"--query", "addressPrefixes || [addressPrefix]", "-o", "json")
+		require.JSONEq(t, `["10.100.1.0/26"]`, actual)
+	})
+	t.Run("DenyがStorageの公開アクセスを拒否する", testDenyPublicStorage)
+	t.Run("DINEが診断設定を自動配置する", testDeployDiagnostics)
+	t.Run("再planに差分がない", func(t *testing.T) {
+		require.Equal(t, 0, terraform.PlanExitCode(t, opts))
+	})
+}
 ```
 
-Policyのケース台帳は、有効なassignment・initiative内の各reference ID・effect・パラメータと、試験fixtureの対応を保持する。適用先を解決してから、Deny・DINE・Modify等の動作する効果に未対応のfixtureがあれば失敗させる。Audit系は割当と設定の照合を必須とする。
+Policyの検証も「操作→結果→assert」を直接書く。この例の試験scopeには、Storageの公開アクセスを拒否するDenyと、診断設定を配置するDINEを割り当てる。期待する割当・定義IDとworkspace IDは、合意したPolicyケースと構成から準備する。
 
-```bash
-# tests/e2e/policy-effects.sh — 代表例。台帳の全必須ケースを実行する
-set -euo pipefail
-source tests/support/policy.sh
-assert_all_effect_cases_covered "$RUN_DIR/policy-cases.json"
-while IFS= read -r case_json; do
-  # 同一principal・resource type、別のprobe IDで試験条件だけを変える
-  allowed=$(policy_probe "$case_json" allowed)
-  jq -e '.status == "Succeeded"' <<< "$allowed" >/dev/null
-  effect=$(jq -r .effect <<< "$case_json")
-  if [[ "$effect" == "Deny" ]]; then
-    denied=$(policy_probe "$case_json" forbidden) # 失敗応答もJSONで返す
-    assignment=$(jq -r .assignment_id <<< "$case_json")
-    reference=$(jq -r .reference_id <<< "$case_json")
-    jq -e --arg a "$assignment" --arg r "$reference" '
-      .status == "Failed" and .error.code == "RequestDisallowedByPolicy"
-      and any(.violations[]; .assignment_id == $a and .reference_id == $r)
-    ' <<< "$denied" >/dev/null # 権限不足・入力不正では合格しない
-  elif [[ "$effect" == "DeployIfNotExists" ]]; then
-    target=$(policy_target "$case_json") # 新規作成、または割当前に作った対象
-    if [[ $(jq -r .scenario <<< "$case_json") == existing ]]; then
-      request_remediation "$case_json" "$target"
-    fi
-    actual=$(wait_for_deployed_settings "$case_json" "$target" 1800)
-    expected=$(jq -c .expected_settings <<< "$case_json")
-    diff -u <(jq -S . <<< "$expected") <(jq -S . <<< "$actual")
-  else
-    assert_other_effect "$case_json" # Modify等も作成後の実値を照合
-  fi
-done < <(jq -c '.required[]' "$RUN_DIR/policy-cases.json")
+```go
+// tests/e2e/policy_test.go
+package e2e
+
+import (
+	"encoding/json"
+	"slices"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/gruntwork-io/terratest/modules/terraform"
+	"github.com/stretchr/testify/require"
+)
+
+func testDenyPublicStorage(t *testing.T) {
+	opts := terraformOptions(t, "../fixtures/storage-policy", "deny", "TEST_PROBE_TFVARS")
+	opts.Vars = map[string]interface{}{"public_network_access_enabled": false}
+	defer terraform.Destroy(t, opts) // apply前に登録。途中失敗でも後始末する
+	terraform.InitAndApply(t, opts)  // 許可側が成功することを先に確認
+
+	assignmentID := requiredEnv(t, "PUBLIC_STORAGE_DENY_ASSIGNMENT_ID")
+	definitionID := requiredEnv(t, "PUBLIC_STORAGE_DENY_DEFINITION_ID")
+	require.Eventually(t, func() bool {
+		// Policy反映前に成功しても、次回は許可状態に戻してから再試行する。
+		opts.Vars["public_network_access_enabled"] = false
+		if _, err := terraform.ApplyE(t, opts); err != nil {
+			return false
+		}
+		opts.Vars["public_network_access_enabled"] = true
+		_, err := terraform.ApplyE(t, opts)
+		return err != nil && strings.Contains(err.Error(), "RequestDisallowedByPolicy") &&
+			strings.Contains(err.Error(), assignmentID) && strings.Contains(err.Error(), definitionID)
+	}, 15*time.Minute, 30*time.Second, "公開アクセスが対象Policyで拒否されること")
+}
+
+func testDeployDiagnostics(t *testing.T) {
+	opts := terraformOptions(t, "../fixtures/storage-policy", "dine", "TEST_PROBE_TFVARS")
+	opts.Vars = map[string]interface{}{"public_network_access_enabled": false}
+	defer terraform.Destroy(t, opts)
+	terraform.InitAndApply(t, opts) // fixtureは診断設定を自分で作らない
+
+	targetID := terraform.Output(t, opts, "diagnostic_target_id")
+	expected := requiredEnv(t, "EXPECTED_LOG_WORKSPACE_ID")
+	require.Eventually(t, func() bool {
+		out, err := azE(t, "monitor", "diagnostic-settings", "list", "--resource", targetID,
+			"--query", "value[].workspaceId", "-o", "json")
+		if err != nil {
+			return false
+		}
+		var actual []string
+		return json.Unmarshal([]byte(out), &actual) == nil && slices.Contains(actual, expected)
+	}, 30*time.Minute, 20*time.Second, "DINEが指定workspace宛ての診断設定を配置すること")
+}
 ```
 
-`policy_probe` はHTTP statusとARMのJSON bodyを保存し、非同期処理の完了も待って上記の共通形式へ正規化する。Policy拒否は構造化されたcode・割当ID・reference IDで判定し、CLIのstderr文字列だけで判定しない。`wait_for_deployed_settings` は対象リソースの存在と必要なプロパティを期限内に読み直し、未反映なら失敗する。DINEは新規作成後の自動配置と、既存不適合へのremediationを別ケースにする。反映待ちのリトライは認めるが、skip・無条件成功にはしない。
+Denyは、権限不足や入力不正を合格にしないため、許可側の成功と、禁止側の `RequestDisallowedByPolicy`・対象割当ID・定義IDを確認する。ここではTerraform providerが返したエラーのcodeとIDを照合する。割当直後の反映待ちは期限付きで行い、毎回いったん許可状態に戻すことで、前回の成功による差分なしを誤判定しない。DINEは、診断設定の実値が期待するworkspaceを指すまで期限付きで待つ。
+
+`tests/fixtures/storage-policy/` は試験用Storageだけを作るTerraform構成で、入力 `public_network_access_enabled` と出力 `diagnostic_target_id` を持つ。診断設定はfixture自身で作らず、DINEに作らせる。Deny・DINEごとに名前を分け、試験対象は当該Policyが適用される専用scopeに配置する。root側の `bastion_subnet_id` も、このサンプルで定義するoutputである。
+
+掲載例はテストの読み方を示す代表ケースで、ALZ全体の試験を網羅した完成プロジェクトではない。管理グループ・RBAC・監視・ネットワークの配置確認、全有効Deny／DenyAction／Modify／Append／DINEの実効性、既存不適合への修復、通信・遮断は、A.3の台帳と対応する `t.Run` を追加する。必須ケースに対応する試験がなければCIを失敗させる。DINEの設定値も、採用したPolicyの要件に合わせて確認項目を追加する。
 
 ### A.2.3 テスト基盤の実物
 
-```bash
-# tests/support/run.sh — 実行ごとの名前空間と、固定fixtureの保護
-RUN_KEY="${GITHUB_RUN_ID:?}-${GITHUB_RUN_ATTEMPT:?}"
-RUN_DIR=".test-runs/$RUN_KEY"
-mkdir -p "$RUN_DIR"
-export RUN_KEY RUN_DIR
+テストを読むために必要な共通処理も示す。`terraformOptions` はstateと入力の指定、`az` はAzure CLI実行だけを担当し、合格条件は各テスト本体に置く。CLIはActionsでログインしたUAMIの認証を利用する。GoのAzure SDK用に別の認証方式を足さない。
 
-assert_test_target() {
-  account=$(az account show -o json)
-  test "$(jq -r .tenantId <<< "$account")" = "$TEST_TENANT_ID"
-  jq -e --arg id "$(jq -r .id <<< "$account")" \
-    'index($id) != null' <<< "$TEST_SUBSCRIPTION_IDS_JSON" >/dev/null
-  verify_fixed_fixture_ids # 親MG、state、ID、回線も固定fixture台帳と照合
+```go
+// tests/e2e/support_test.go
+package e2e
+
+import (
+	"encoding/json"
+	"os"
+	"slices"
+	"strings"
+	"testing"
+
+	"github.com/gruntwork-io/terratest/modules/logger"
+	"github.com/gruntwork-io/terratest/modules/shell"
+	"github.com/gruntwork-io/terratest/modules/terraform"
+	"github.com/stretchr/testify/require"
+)
+
+func requiredEnv(t *testing.T, key string) string {
+	t.Helper()
+	value := os.Getenv(key)
+	require.NotEmpty(t, value, "試験設定が必要: %s", key)
+	return value
 }
 
-# tests/support/factory.sh — 作成に失敗しても後始末できるよう先に記録
-create_probe_group() {
-  local name="probe-$RUN_KEY-$1"
-  local id="/subscriptions/$TEST_SUBSCRIPTION_ID/resourceGroups/$name"
-  record_owned_id "$RUN_KEY" "$id" # 固定fixtureは所有対象に登録できない
-  az group create --subscription "$TEST_SUBSCRIPTION_ID" \
-    --name "$name" --location japaneast --tags testRun="$RUN_KEY" >/dev/null
-  printf '%s\n' "$id"
+func assertTestTarget(t *testing.T) {
+	t.Helper()
+	require.Equal(t, requiredEnv(t, "TEST_TENANT_ID"), az(t, "account", "show", "--query", "tenantId", "-o", "tsv"))
+	var pool []string
+	require.NoError(t, json.Unmarshal([]byte(requiredEnv(t, "TEST_SUBSCRIPTION_IDS_JSON")), &pool))
+	require.True(t, slices.Contains(pool, az(t, "account", "show", "--query", "id", "-o", "tsv")))
+}
+
+func terraformOptions(t *testing.T, dir, stateName, varFileEnv string) *terraform.Options {
+	t.Helper()
+	return &terraform.Options{
+		TerraformDir: dir,
+		VarFiles:     []string{requiredEnv(t, varFileEnv)},
+		BackendConfig: map[string]interface{}{
+			"key": "e2e/" + requiredEnv(t, "TEST_RUN_KEY") + "/" + stateName + ".tfstate",
+		},
+		Reconfigure: true, NoColor: true, SetVarsAfterVarFiles: true,
+	}
+}
+
+func azE(t *testing.T, args ...string) (string, error) {
+	t.Helper()
+	return shell.RunCommandAndGetStdOutE(t, shell.Command{
+		Command: "az", Args: args, Logger: logger.Discard,
+	})
+}
+
+func az(t *testing.T, args ...string) string {
+	t.Helper()
+	out, err := azE(t, args...)
+	require.NoError(t, err)
+	return strings.TrimSpace(out)
 }
 ```
 
-leaseとmanifestはrunner外の固定ストレージに保存する。固定サブスクリプションを共有するため、実行を直列にする単位はPR番号ではなく試験poolである。後始末ではprobeを削除し、先にTerraform管理のsubscription associationの解除を構成変更とapplyで実施してstateへ反映し、固定サブスクリプションを退避先MGへ戻す。その後にrootをdestroyして空の試験MGを削除する。最後にAzure上の残存と退避先を確認する。stateと所有台帳を併用し、DINEが作成した子リソースも確認する。固定fixtureは削除しない。失敗時はpoolを隔離し、state・manifestを保持して復旧する。
+試験用の親MG・pool・ID・backend・開通済み回線と、それらを参照するtfvarsは、信頼した固定fixtureと照合してから渡す。`TEST_TFVARS` と `TEST_PROBE_TFVARS` は絶対パス、`TEST_RUN_KEY` はrun ID＋attemptとする。leaseと所有manifestはrunner外に先に保存し、`platform`・`deny`・`dine`等のstate keyを同じrun配下に事前登録する。probeのtfvarsにもrunごとに固有のリソース名を設定する。
+
+共有poolは直列化し、`t.Parallel()` は使わない。probeは `defer terraform.Destroy` で片付け、ALZ全体は独立cleanup jobで、probe削除→subscription associationの解除を構成変更とapplyで反映→固定subscriptionを退避先へ戻す→rootのdestroy→残存確認の順に回収する。固定fixtureと回線は削除しない。Goのtimeout・runner停止でdeferが動かない場合も、保存したstateとmanifestから回収する。失敗時はpoolを隔離する。
 
 ### A.2.4 テスト設定の実物
+
+Goモジュールはリポジトリrootに置く。この例はGo 1.23以降、Terratest `v0.48.2`、testify `v1.10.0` のAPIで記述する。初回に `go mod init example.com/alz-tests` と `go get github.com/gruntwork-io/terratest@v0.48.2 github.com/stretchr/testify@v1.10.0` を実行し、`go.mod`・`go.sum` を管理する。Terratestの最新版v2はimport/APIが異なるため、固定した版の例と混ぜない。
 
 ```bash
 # scripts/test.sh — 通常実行はAzureへの作成・課金を伴わない
@@ -789,8 +864,9 @@ case "${1:-unit}" in
   integration)
     terraform init -backend=false -test-directory=tests/integration
     terraform test -test-directory=tests/integration ;;
-  e2e)         bash tests/e2e/platform.sh ;;
-  *)           printf 'usage: %s unit|integration|e2e\n' "$0" >&2; exit 2 ;;
+  e2e)
+    go test -v -count=1 -parallel=1 -timeout=4h ./tests/e2e ;;
+  *) printf 'usage: %s unit|integration|e2e\n' "$0" >&2; exit 2 ;;
 esac
 ```
 
@@ -803,7 +879,8 @@ jobs:
     timeout-minutes: 240
     permissions: { contents: read, id-token: write }
     steps:
-      # checkout、Terraform導入、UAMIへのOIDCログイン、fixture読込を先に行う
+      # checkout、Go/Terraform導入、go mod download、UAMIへのOIDCログイン
+      # 固定fixture照合・pool lease取得・所有manifest保存・環境変数設定を先に行う
       - run: bash scripts/test.sh unit
       - run: bash scripts/test.sh integration
       - run: bash scripts/test.sh e2e
@@ -814,7 +891,8 @@ jobs:
     timeout-minutes: 120
     permissions: { contents: read, id-token: write }
     steps:
-      # 同じcommitをcheckoutし、独立したcleanup用UAMIへOIDCログイン
+      # 同じcommitをcheckoutし、cleanup用UAMIへOIDCログイン
+      # runner外のmanifestと同じrunの全stateから回収する
       - run: bash scripts/cleanup.sh "${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
   alz-required:
     needs: [e2e, cleanup]
@@ -827,7 +905,9 @@ jobs:
         run: test "$E2E" = success && test "$CLEANUP" = success
 ```
 
-実行中のE2Eは新しいcommitの到着で自動キャンセルしない。待機中の取消・時間切れ・cleanup失敗は合格にならず、最新commitで `alz-required` が成功して初めてマージできる。workflow自体の取消やrunner障害でも回収する独立reconcilerを用意する。初期案の「作成・検証4時間＋後始末2時間、1回1万円」は運用上限案であり、課金の強制停止や所要時間の保証ではない。
+`-count=1` は過去の成功結果の再利用を防ぐ。実行中のE2Eを新しいcommitの到着で自動キャンセルせず、最新commitの検証とcleanupが成功した場合だけマージできる。workflow取消・runner障害も独立reconcilerで回収する。1回1万円・主処理4時間＋cleanup2時間は初期の運用案であり、費用・所要時間の保証ではない。必須試験をskipして枠に合わせない。
+
+参考：[Terratest公式Azure例（v0.48.2）](https://github.com/gruntwork-io/terratest/blob/v0.48.2/test/azure/terraform_azure_network_example_test.go)、[公式PlanExitCode](https://github.com/gruntwork-io/terratest/blob/v0.48.2/modules/terraform/plan.go)。今回のPolicyケースは自作であり、公式サンプルの転載ではない。掲載した3つのGoファイルはGo 1.23.3でコンパイルを確認済み。実AzureでのE2Eは未実行であり、コンパイル成功と配置・Policyの動作確認は別に記録する。
 
 ## A.3 プランドキュメントの完全版
 
@@ -865,7 +945,8 @@ EA契約、ユーザー割り当てマネージドIDへのOIDCフェデレーシ
   Bastion Standard、ErGw1AZ、Private DNS・DNS Private Resolverを構成する。
 - `modules/settings/` — 命名・アドレス・Policyパラメータの純粋な変換。
 - `tests/unit/`、`tests/integration/` — Terraform Test。入力境界とAVMの接続を検証。
-- `tests/e2e/`、`tests/support/` — Azure実設定・効果・通信の検証とfixture管理。
+- `tests/e2e/*_test.go` — Go＋Terratest＋testifyでAzure実設定・Policy効果・通信を検証。
+- `tests/support/` — 試験対象の保護とfixture管理。期待値のassertはテスト本体に置く。
 - `scripts/test.sh`、`scripts/cleanup.sh` — 実行の入口、state管理、後始末。
 - `.github/workflows/test.yml` — PR検証と独立cleanup。alz-requiredを必須checkにする。
 
@@ -896,7 +977,7 @@ EA契約、ユーザー割り当てマネージドIDへのOIDCフェデレーシ
 - Hub・Spoke・オンプレの重複を拒否し、Policy入力と監視先IDが正しく渡る。
 - Firewall・Bastion・ER GatewayのSKU、有償DDoS無効、VPN無効がplanに現れる。
 
-E2E（Terraform CLI＋Azure API）:
+E2E（Go＋Terratest＋testify、Azure CLI／API）:
 
 - 管理グループ階層、サブスクリプション配置、RBAC、Policy割当・パラメータ、
   監視・診断設定、ネットワークの実値を仕様と照合する（D-001）。
@@ -920,7 +1001,8 @@ E2E（Terraform CLI＋Azure API）:
 
 - `terraform fmt -check -recursive` / `terraform validate` — フォーマットと構成検証。
 - `bash scripts/test.sh unit` / `bash scripts/test.sh integration` — 全単体・結合。
-- `bash scripts/test.sh e2e` — 専用試験環境で全E2E。CIのcleanup成功も必須。
+- `bash scripts/test.sh e2e` — 内部で `go test -v -count=1 -parallel=1 -timeout=4h ./tests/e2e` を実行。
+  専用試験環境で全E2Eを確認し、CIの独立cleanup成功も必須。
   ローカルの未実行・途中取消を合格として扱わない。
 
 ## 8. スコープ外
