@@ -961,6 +961,8 @@ E2E（Terratest）:
 
 - 題材はCAFに沿ったAzureのPlatform landing zone（共通基盤）。
 - 新規環境への構築を想定する。
+- Acceleratorによる生成・bootstrapは採用せず、公式実装を参考に自分たちのTerraform構成・CI/CD・テストを作る。公式AVMを部品として利用する範囲はヒアリングで決める。
+- テスト駆動開発を前提とし、受け入れ条件とテストケースの確認を実装より先に行う。
 - 今回は情報収集まで。A.1〜A.5のALZ向け改稿とTerraform実装は次の段階で行う。
 - 既存会話のEA契約・ユーザー割り当てマネージドIDのフェデレーションは前提として記録する。Platform用のサブスクリプション構成と実行権限は設計時に具体化する。
 
@@ -992,9 +994,9 @@ Microsoftの推奨はALZ IaC AcceleratorとAzure Verified Modules（AVM）を使
 
 旧[Azure/terraform-azurerm-caf-enterprise-scale](https://github.com/Azure/terraform-azurerm-caf-enterprise-scale)は、調査時点でアーカイブ済み。公式READMEも非推奨・更新終了とAVMへの移行を明記しているため、新規構築の基準はAVM側とする。
 
-### 3. 調査基準にするスターター
+### 3. 公式コードの参照バージョン
 
-確認したAcceleratorの最新releaseは[v17.6.0](https://github.com/Azure/alz-terraform-accelerator/releases/tag/v17.6.0)（2026-10-06）。今後の比較基準として、このtagの[Platform landing zoneスターター](https://github.com/Azure/alz-terraform-accelerator/tree/v17.6.0/templates/platform_landing_zone)を使う候補とする。
+確認したAcceleratorの最新releaseは[v17.6.0](https://github.com/Azure/alz-terraform-accelerator/releases/tag/v17.6.0)（2026-10-06）。公式コード比較の参照として、このtagの[Platform landing zoneスターター](https://github.com/Azure/alz-terraform-accelerator/tree/v17.6.0/templates/platform_landing_zone)を記録する。自作版で採用するprovider・moduleのバージョンは、テスト要件と合わせて別途決める。
 
 | 定義 | v17.6.0で確認した指定 |
 | --- | --- |
@@ -1025,9 +1027,11 @@ Microsoftの推奨はALZ IaC AcceleratorとAzure Verified Modules（AVM）を使
 | 5 | `main.connectivity.*.tf` | ネットワーク構成とproviderの使い分け |
 | 6 | `main.config.tf`、`lib/` | 構成値の展開、ALZ Libraryとカスタマイズ |
 
-この構成を、後で書籍の「1ファイル1責務」「機能境界」「テスト」「プラン」の例へ落とし込む。先に架空の独自ディレクトリや独自モジュールを決めず、公式スターターの責務分割を確認する。
+この責務分割を、自作版のTerraform構成と、書籍の「1ファイル1責務」「機能境界」「テスト」「プラン」の例を設計する参考にする。
 
-### 5. セットアップ方式の選択
+### 5. 実装方式の決定
+
+採用方針は、自分たちでTerraformの構成・CI/CD・テストを実装する方式。以下は公式の選択肢を調べた記録である。
 
 | 方式 | 特徴・前提 |
 | --- | --- |
@@ -1037,7 +1041,7 @@ Microsoftの推奨はALZ IaC AcceleratorとAzure Verified Modules（AVM）を使
 
 参照：[Accelerator](https://azure.github.io/Azure-Landing-Zones/accelerator/)、[スターターREADME](https://github.com/Azure/alz-terraform-accelerator/blob/v17.6.0/templates/platform_landing_zone/README.md)
 
-公式GitHub bootstrapは個人アカウントに対応していない。Free Organizationではpublic repositoryを作るとの記載もある。現在の個人名義リポジトリでサンプルを扱う場合は、Organizationでのbootstrapと、スターター／AVMを参照してCI/CDを用意する方式を比較する。
+公式GitHub bootstrapは個人アカウントに対応していない。Free Organizationではpublic repositoryを作るとの記載もある。今回は標準bootstrapを使わないため、このOrganization要件を自作方式の必須条件にはしない。自作CIで使用するGitHub機能の要件は別途確認する。
 
 参照：[GitHubの前提条件](https://azure.github.io/Azure-Landing-Zones/accelerator/1_prerequisites/github/)
 
@@ -1050,3 +1054,39 @@ Microsoftの推奨はALZ IaC AcceleratorとAzure Verified Modules（AVM）を使
 5. GitHub Organizationの利用、state保存先、bootstrapと継続デプロイの権限分離。
 
 初期構成を選ぶ公式シナリオは、[計画ガイド](https://azure.github.io/Azure-Landing-Zones/accelerator/0_planning/)で確認する。管理グループ・Policy・管理リソースだけの構成や、単一リージョン構成もあり、最初から全機能を採用する必要はない。
+
+### 7. 公式リポジトリのテスト実装
+
+調査対象はコードとCIの定義。公式のAzure試験自体は実行していない。ALZ coreは参照commit `e2a318c3eba91967c4ce3cd2738b2b2569db994e`、共通ツールは `790f00b5bb824ce381ae3cddb81d5fd1976a9478` を記録する。前節のスターター固定版とは別の調査スナップショットである。
+
+| 層 | 実物で確認したこと | 出典 |
+| --- | --- | --- |
+| 構成の単体テスト | `mock_provider`＋`command = plan`＋`assert`／`expect_failures`。管理グループ設定の作成・更新・未作成、名前の境界と不正値を検証 | [hierarchysettings.tftest.hcl](https://github.com/Azure/terraform-azurerm-avm-ptn-alz/blob/e2a318c3eba91967c4ce3cd2738b2b2569db994e/tests/unit/hierarchysettings.tftest.hcl) |
+| Policy側の回帰試験 | ALZ providerでローカルLibraryを解決し、Azure操作側をmock。Policy用RBACを無効にしてもPolicy本体は残ること等を確認 | [policyroleassignmentsenabled.tftest.hcl](https://github.com/Azure/terraform-azurerm-avm-ptn-alz/blob/e2a318c3eba91967c4ce3cd2738b2b2569db994e/tests/unit/policyroleassignmentsenabled.tftest.hcl) |
+| ネットワークの単体テスト | 主リージョン指定・未指定・複数指定の拒否、入力の伝播・省略・相反入力などを検証 | [Hub-Spoke is_primary](https://github.com/Azure/terraform-azurerm-avm-ptn-alz-connectivity-hub-and-spoke-vnet/blob/main/tests/unit/is_primary.tftest.hcl) |
+| 実Azureの結合テスト | ALZ coreの複数ロール定義は実applyを2回行う回帰試験。該当ファイルには明示的assertがない | [multipleroledefs.tftest.hcl](https://github.com/Azure/terraform-azurerm-avm-ptn-alz/blob/e2a318c3eba91967c4ce3cd2738b2b2569db994e/tests/integration/multipleroledefs.tftest.hcl) |
+| AVM共通E2E | examplesごとにinit→実apply→再planの差分ゼロ確認→destroy。失敗時の後始末とpost hookを用意 | [E2E runner](https://github.com/Azure/azure-verified-modules-tools/blob/790f00b5bb824ce381ae3cddb81d5fd1976a9478/src/Avm.Authoring/Engines/Terraform/Invoke-AvmTerraformTestE2e.ps1) |
+| 静的検査 | format・lint・convention・validate・docs等を検査する。構成の振る舞いを検証するテストとは役割が異なる | [PR check](https://github.com/Azure/azure-verified-modules-tools/blob/790f00b5bb824ce381ae3cddb81d5fd1976a9478/src/Avm.Authoring/Public/Invoke-AvmPrCheck.ps1) |
+
+公式の共通CIはPowerShellのAvm.Authoringを使い、`avm test unit`／`integration`／`e2e`を呼ぶ。単体・結合の内部では `terraform test -test-directory=tests/unit` または `tests/integration`を実行する。単体jobはAzure認証情報を渡さず、実試験はOIDCと専用subscription poolを使用する。これは調査した公式の仕組みであり、自作CIのツール選定は要件から行う。
+
+参照：[AVM共通CI](https://github.com/Azure/azure-verified-modules-tools/blob/790f00b5bb824ce381ae3cddb81d5fd1976a9478/.github/workflows/terraform-module.yml)
+
+確認時の注意：
+
+- mock付きの`apply`もあるため、コマンド名だけで実Azure試験と判断しない。[vWANの例](https://github.com/Azure/terraform-azurerm-avm-ptn-alz-connectivity-virtual-wan/blob/main/tests/unit/gateway_connection_dpd_timeout_seconds.tftest.hcl)
+- Managementの`tests/examples.tftest.hcl`はplan2件で、明示assert・mockがない。このファイルを詳細な単体検証と扱わない。[実ファイル](https://github.com/Azure/terraform-azurerm-avm-ptn-alz-management/blob/main/tests/examples.tftest.hcl)
+- 共通CIに結合jobが存在しても、各リポジトリに同じtierのテスト実体があるとは限らない。
+- 公式E2Eで確認した作成・冪等性・削除の成功だけでは、通信疎通、Policyの拒否、RBACの実効性まで確認したことにはならない。
+- Accelerator側のシナリオ組み合わせテストも参照した。PR向けplanと、条件付きapply・後始末を分けている。AVM共通E2Eとは別の実装である。[workflow](https://github.com/Azure/alz-terraform-accelerator/blob/v17.6.0/.github/workflows/end-to-end-test.yml)、[runner](https://github.com/Azure/alz-terraform-accelerator/blob/v17.6.0/.github/tests/scripts/terraform-run.ps1)
+
+### 8. 自作版のTDDの進め方
+
+1. ヒアリングで「許可すること・拒否すること・維持すること」を受け入れ条件にする。
+2. 正常系・境界・異常系・再適用・後始末をテストケースへ落とし、人間が内容を確認する。
+3. 1件ずつテストを書き、意図した理由でRedになることを確認してから最小実装する。
+4. Greenを保って整理し、対応するテストと実行結果を記録する。
+5. mockで保証する範囲と実Azureで保証する範囲を分け、Policy・RBAC・通信等の実効性も必要に応じて検証する。
+
+テスト基盤の第一候補はTerraform Test。追加の実状態・通信検証の方法は、受け入れ条件から選ぶ。テストの期待値は実装コードや公式サンプルの出力ではなく、合意した要件を出典にする。専用サブスクリプションだけでなく、試験用の親管理グループ・権限・課金・後始末の範囲もヒアリングする。
+
