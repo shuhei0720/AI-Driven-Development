@@ -92,8 +92,15 @@ GitHubのリポジトリを使用していること。各社のAI駆動開発の
 
 ## A.1 リポジトリ装置の実物一式
 
-### A.1.1 エージェント向けREADME（AGENTS.md）
-作成先：リポジトリ直下の `AGENTS.md`。技術スタック・構成・コマンド・参照ルールをまとめる。
+### A.1.1 リポジトリ全体の指示
+
+次の本文を各ツールの指示ファイルに同じ内容で置く。
+
+| ツール | 作成先 | 読み込むタイミング |
+| --- | --- | --- |
+| Claude Code | `CLAUDE.md` | プロジェクトでの作業開始時 |
+| Codex | `AGENTS.md` | リポジトリ内での作業開始時 |
+| GitHub Copilot | `.github/copilot-instructions.md` | 対応クライアントでリポジトリを扱うとき |
 
 ```markdown
 # Azure Platform Landing Zone
@@ -132,27 +139,55 @@ CAFに沿った共通基盤を東日本に構築する。管理グループ・Po
 | `*.tf`、`modules/**`、`lib/**`、`scripts/**`、`.github/workflows/**` | `docs/rules/architecture.md` |
 | `tests/**`、テストの追加・変更 | `docs/rules/testing.md` |
 | プルリクエスト前・レビュー実行時 | `docs/rules/review.md` |
-| `scripts/**`、`.github/workflows/**` | `docs/rules/logging.md` |
-| `*.tf`、`modules/**`、`tests/**`、`scripts/**` | `docs/rules/state.md` |
 
 - ルールと仕様書が矛盾した場合は、推測で進めず作業を止めて矛盾を報告する
 ```
 
-`docs/rules/` のルールは `AGENTS.md` の案内に従って明示的に読む。`paths` は適用対象を示すもので、この配置だけでは自動読込にならない。
+ルール本文は3ツール共通の `docs/rules/` に置き、上の適用表に従って読む。後述のエージェントにも、同じルールを読む指示を含める。
+
+#### パスに応じたルールの選択
+
+ルール本文は共通のまま、ツール別の入口に対象パスと読込先を書く。以下はアーキテクチャ用の例。
+
+**Claude Code** — 作成先：`.claude/rules/architecture.md`。`paths` で対象を指定する。
+
+```markdown
+---
+paths: ["**/*.tf", "lib/**", "scripts/**", ".github/workflows/**"]
+---
+作業前に docs/rules/architecture.md を読む。
+```
+
+**Codex** — 設定先：`AGENTS.md` の適用表。適用対象を文章で指定する。
+
+```markdown
+## 対象パスごとのルール
+- `*.tf`・`modules/**`・`lib/**`・`scripts/**`・`.github/workflows/**`：docs/rules/architecture.md を読む
+- `tests/**`・テストの追加や変更：docs/rules/testing.md を読む
+- PR作成前・レビュー時：docs/rules/review.md を読む
+```
+
+**GitHub Copilot** — 作成先：`.github/instructions/architecture.instructions.md`。`applyTo` で対象を指定する。
+
+```markdown
+---
+applyTo: "**/*.tf,lib/**,scripts/**,.github/workflows/**"
+---
+作業前に docs/rules/architecture.md を読む。
+```
+
+`testing` の対象は `tests/**,scripts/test.sh,.github/workflows/**`、`review` は `**` とする。入口の配置は以下のとおり。Codexの `.rules` はコマンド実行の許可設定なので、文章ルールの配置先には使わない。
+
+| ツール | テスト用の入口 | レビュー用の入口 |
+| --- | --- | --- |
+| Claude Code | `.claude/rules/testing.md` | `.claude/rules/review.md` |
+| Codex | `AGENTS.md` のテスト行 | `AGENTS.md` のレビュー行 |
+| GitHub Copilot | `.github/instructions/testing.instructions.md` | `.github/instructions/review.instructions.md` |
 
 ### A.1.2 ルールファイル　－　アーキテクチャ
 作成先：`docs/rules/architecture.md`。ファイル構成、責務の分け方、機能間の依存を決める。
 
 ```markdown
----
-paths:
-  - "*.tf"
-  - "modules/**"
-  - "lib/**"
-  - "scripts/**"
-  - ".github/workflows/**"
----
-
 # architecture
 
 ## 構造（どこに何を置くか）
@@ -196,13 +231,6 @@ paths:
 作成先：`docs/rules/testing.md`。テストの分担、合格条件、試験環境の扱いを決める。
 
 ```markdown
----
-paths:
-  - "tests/**"
-  - "scripts/test.sh"
-  - ".github/workflows/**"
----
-
 # 単体/E2Eの切り分けと骨抜き禁止
 
 ## 種別と実行コマンド
@@ -274,11 +302,6 @@ test "$(jq -r '.error.code' deny-response.json)" = "RequestDisallowedByPolicy"
 作成先：`docs/rules/review.md`。レビューの観点、指摘の優先度、完了条件を決める。
 
 ```markdown
----
-paths:
-  - "**"
----
-
 # AI相互レビューの適用
 
 ## タイミング
@@ -314,84 +337,185 @@ paths:
 
 
 ### A.1.7 サブエージェント定義の編成一式
-Claude Code用のレビュー担当を `.claude/agents/` に置き、観点を分けて呼び出す。
+
+3ツールで同じ担当・観点・報告形式を使い、設定書式だけを変える。モデルは利用中の設定を継承する。
 
 #### プランレビューエージェント
 
-作成先：`.claude/agents/design-reviewer.md`。変更差分がプランの受け入れ条件と一致するか確認する。
+**Claude Code** — 作成先：`.claude/agents/design-reviewer.md`。
 
 ```markdown
 ---
 name: design-reviewer
-description: 実装の差分をプランドキュメントと照合し、乖離を報告する
-model: opus
+description: 変更差分とプランドキュメントを照合し、乖離を報告する
+model: inherit
 tools: Read, Grep, Glob, Bash
 ---
 
-あなたはプランとの整合を確認するレビュアーである。実装の経緯は考慮しない。
+docs/plans/ の対象プランと、docs/rules/ の該当ルールを読む。
+渡された変更差分を、受け入れ条件・テストケースと照合する。
+不足（条件に対応する変更がない）と過剰（プラン外の変更）を両方向で確認する。
+実装の経緯は判断根拠にしない。ファイルは編集しない。
+判断に迷う点は「要確認」として分ける。
+P0（プランとの矛盾）/ P1（条件の実装漏れ）/ P2（無害なプラン外変更）で報告し、file:line と根拠を添える。
+```
 
-1. プランドキュメント（.claude/plans/ の該当ファイル）を読む
-2. `git diff HEAD` で未コミットの差分を取得する
-3. 次の両方向で照合する
-   - 不足：プランの受け入れ条件・テストケース一覧に、対応する変更が存在するか
-   - 過剰：プランに書かれていない変更が差分に混入していないか
-4. 乖離だけを報告する。判断に迷う点は「要確認」として分ける
+**Codex** — 作成先：`.codex/agents/design-reviewer.toml`。
 
-報告形式：P0（プランと矛盾する実装）/ P1（条件の実装漏れの疑い）/
-P2（プラン外だが無害な変更）。各指摘に file:line と根拠を添える。
+```toml
+name = "design-reviewer"
+description = "変更差分とプランドキュメントを照合し、乖離を報告する"
+developer_instructions = """
+docs/plans/ の対象プランと、docs/rules/ の該当ルールを読む。
+渡された変更差分を、受け入れ条件・テストケースと照合する。
+不足（条件に対応する変更がない）と過剰（プラン外の変更）を両方向で確認する。
+実装の経緯は判断根拠にしない。ファイルは編集しない。
+判断に迷う点は「要確認」として分ける。
+P0（プランとの矛盾）/ P1（条件の実装漏れ）/ P2（無害なプラン外変更）で報告し、file:line と根拠を添える。
+"""
+```
+
+**GitHub Copilot** — 作成先：`.github/agents/design-reviewer.agent.md`。
+
+```markdown
+---
+name: design-reviewer
+description: 変更差分とプランドキュメントを照合し、乖離を報告する
+tools: ["read", "search", "execute"]
+---
+
+docs/plans/ の対象プランと、docs/rules/ の該当ルールを読む。
+渡された変更差分を、受け入れ条件・テストケースと照合する。
+不足（条件に対応する変更がない）と過剰（プラン外の変更）を両方向で確認する。
+実装の経緯は判断根拠にしない。ファイルは編集しない。
+判断に迷う点は「要確認」として分ける。
+P0（プランとの矛盾）/ P1（条件の実装漏れ）/ P2（無害なプラン外変更）で報告し、file:line と根拠を添える。
 ```
 
 #### テストレビューエージェント
 
-作成先：`.claude/agents/edge-case-reviewer.md`。境界値・異常系とテストの抜けを確認する。
+**Claude Code** — 作成先：`.claude/agents/edge-case-reviewer.md`。
 
 ```markdown
 ---
 name: edge-case-reviewer
-description: 実装の差分の異常系・境界値の抜けを検査する
-model: opus
+description: 変更差分の異常系・境界値とテストの抜けを検査する
+model: inherit
 tools: Read, Grep, Glob, Bash
 ---
 
-あなたは異常系専任のレビュアーである。機能が動くかは見ない。壊れ方だけを見る。
+docs/plans/ の対象プラン、docs/rules/testing.md と該当ルールを読む。
+渡された変更差分の条件分岐、境界の両側、null・空値、非同期処理の失敗経路を確認する。
+削除された関数・変数の参照が残っていないか確認する。
+対応するテストが正常系だけでなく、境界値・異常系も検証しているか照合する。
+実装の経緯は判断根拠にしない。ファイルは編集しない。
+P0（データ破壊・失敗の握り潰し）/ P1（異常系・境界値の抜け）/ P2（改善提案）で報告し、file:line と壊れる入力例を添える。
+```
 
-1. `git diff HEAD` で差分を取得し、変更のかたまりごとに検査する
-2. 追加行に対して：条件分岐の漏れ（elseやdefaultの欠落）、境界値の
-   両側（0・上限・ちょうど）、null・undefined・空配列・空文字の扱い、
-   非同期処理の失敗経路、を確認する
-3. 削除行に対して：削除された関数・変数を他のファイルが参照していないか
-   grepで確認する
-4. 変更に対応するテストが境界の両側を検証しているかを確認する
+**Codex** — 作成先：`.codex/agents/edge-case-reviewer.toml`。
 
-報告形式：P0（データ破壊・例外の握り潰し）/ P1（境界値・異常系の抜け）/
-P2（防御的な改善提案）。各指摘に file:line と、壊れる入力の実例を添える。
+```toml
+name = "edge-case-reviewer"
+description = "変更差分の異常系・境界値とテストの抜けを検査する"
+developer_instructions = """
+docs/plans/ の対象プラン、docs/rules/testing.md と該当ルールを読む。
+渡された変更差分の条件分岐、境界の両側、null・空値、非同期処理の失敗経路を確認する。
+削除された関数・変数の参照が残っていないか確認する。
+対応するテストが正常系だけでなく、境界値・異常系も検証しているか照合する。
+実装の経緯は判断根拠にしない。ファイルは編集しない。
+P0（データ破壊・失敗の握り潰し）/ P1（異常系・境界値の抜け）/ P2（改善提案）で報告し、file:line と壊れる入力例を添える。
+"""
+```
+
+**GitHub Copilot** — 作成先：`.github/agents/edge-case-reviewer.agent.md`。
+
+```markdown
+---
+name: edge-case-reviewer
+description: 変更差分の異常系・境界値とテストの抜けを検査する
+tools: ["read", "search", "execute"]
+---
+
+docs/plans/ の対象プラン、docs/rules/testing.md と該当ルールを読む。
+渡された変更差分の条件分岐、境界の両側、null・空値、非同期処理の失敗経路を確認する。
+削除された関数・変数の参照が残っていないか確認する。
+対応するテストが正常系だけでなく、境界値・異常系も検証しているか照合する。
+実装の経緯は判断根拠にしない。ファイルは編集しない。
+P0（データ破壊・失敗の握り潰し）/ P1（異常系・境界値の抜け）/ P2（改善提案）で報告し、file:line と壊れる入力例を添える。
 ```
 
 #### セキュリティレビューエージェント
 
-作成先：`.claude/agents/security-reviewer.md`。入力検証・認可・秘密情報の露出を確認する。
+**Claude Code** — 作成先：`.claude/agents/security-reviewer.md`。
 
 ```markdown
 ---
 name: security-reviewer
-description: 実装後の差分をセキュリティ観点でレビューする
-model: opus
+description: 変更差分を入力検証・認可・秘密情報の観点でレビューする
+model: inherit
 tools: Read, Grep, Glob, Bash
 ---
 
-あなたはセキュリティ専任のレビューアーである。
-渡された差分と開発ルール（docs/rules/）だけを読み、実装の経緯は考慮しない。
-観点は3つにしぼる。入力値の検証、認可の抜け、秘密情報のログ出力。
-指摘はP0（修正必須）からP2（提案）に分類して報告する。
+docs/plans/ の対象プランと、docs/rules/ の該当ルールを読む。
+渡された変更差分を、入力検証、認可の抜け、秘密情報の出力の3観点で確認する。
+権限の対象scope、外部入力の扱い、ログや設定への秘密値の混入を点検する。
+実装の経緯は判断根拠にしない。ファイルは編集しない。
+P0（修正必須）/ P1（問題の疑い）/ P2（改善提案）で報告し、file:line と根拠を添える。
 ```
 
+**Codex** — 作成先：`.codex/agents/security-reviewer.toml`。
+
+```toml
+name = "security-reviewer"
+description = "変更差分を入力検証・認可・秘密情報の観点でレビューする"
+developer_instructions = """
+docs/plans/ の対象プランと、docs/rules/ の該当ルールを読む。
+渡された変更差分を、入力検証、認可の抜け、秘密情報の出力の3観点で確認する。
+権限の対象scope、外部入力の扱い、ログや設定への秘密値の混入を点検する。
+実装の経緯は判断根拠にしない。ファイルは編集しない。
+P0（修正必須）/ P1（問題の疑い）/ P2（改善提案）で報告し、file:line と根拠を添える。
+"""
+```
+
+**GitHub Copilot** — 作成先：`.github/agents/security-reviewer.agent.md`。
+
+```markdown
+---
+name: security-reviewer
+description: 変更差分を入力検証・認可・秘密情報の観点でレビューする
+tools: ["read", "search", "execute"]
+---
+
+docs/plans/ の対象プランと、docs/rules/ の該当ルールを読む。
+渡された変更差分を、入力検証、認可の抜け、秘密情報の出力の3観点で確認する。
+権限の対象scope、外部入力の扱い、ログや設定への秘密値の混入を点検する。
+実装の経緯は判断根拠にしない。ファイルは編集しない。
+P0（修正必須）/ P1（問題の疑い）/ P2（改善提案）で報告し、file:line と根拠を添える。
+```
+
+#### 呼び出し方
+
+| ツール | 担当を選ぶ・依頼する |
+| --- | --- |
+| Claude Code | `@`の候補から担当を選ぶか、担当名を指定してレビューを依頼する |
+| Codex | 担当名を指定し、サブエージェントとしてレビューを依頼する。CLIの`/subagents`で活動を確認する |
+| GitHub Copilot | CLIの`/agent`または`copilot --agent=design-reviewer`で選ぶ。VS Codeではエージェント選択欄を使う |
+
+並列の委任に対応する環境では3担当を並列に呼び出し、対応しない環境では担当ごとに独立したセッションで実行する。
 
 ### A.1.8 スキルの実例
-Claude Code用の作業手順を `.claude/skills/<スキル名>/SKILL.md` に置き、必要な作業で呼び出す。
+
+3ツールとも`SKILL.md`の書式は共通。各表の作成先へ同じ内容を置く。
 
 #### テスト駆動開発の実行手順
 
-作成先：`.claude/skills/tdd/SKILL.md`。テストを1件ずつRed→Green→Refactorで進める。
+テストを1件ずつRed→Green→Refactorで進める。
+
+| ツール | 作成先 | 明示的な呼び出し |
+| --- | --- | --- |
+| Claude Code | `.claude/skills/tdd/SKILL.md` | `/tdd` |
+| Codex | `.agents/skills/tdd/SKILL.md` | `$tdd` |
+| GitHub Copilot | `.github/skills/tdd/SKILL.md` | CLIで`/tdd`。対応するIDEではスキル名を指定する |
 
 ```markdown
 ---
@@ -436,7 +560,13 @@ assert削除・skipは「最小実装」ではない。同じ失敗を2回繰り
 
 #### create-pr（PR本文を構造化して投稿する）
 
-作成先：`.claude/skills/create-pr/SKILL.md`。変更内容と検証結果をまとめてPRを作成する。
+変更内容と検証結果をまとめてPRを作成する。
+
+| ツール | 作成先 | 明示的な呼び出し |
+| --- | --- | --- |
+| Claude Code | `.claude/skills/create-pr/SKILL.md` | `/create-pr` |
+| Codex | `.agents/skills/create-pr/SKILL.md` | `$create-pr` |
+| GitHub Copilot | `.github/skills/create-pr/SKILL.md` | CLIで`/create-pr`。対応するIDEではスキル名を指定する |
 
 ```markdown
 ---
@@ -449,7 +579,7 @@ description: 実装が一段落したら、PR本文を課題・解決策・テ�
 ## 1. 差分と経緯を集める
 
 - `git diff main...HEAD` で変更の全体を把握する
-- 対応するプラン（.claude/plans/）と、実装後のAIレビュー結果を読む
+- 対応するプラン（docs/plans/）と、実装後のAIレビュー結果を読む
 
 ## 2. 本文を下書きする
 
@@ -467,6 +597,9 @@ description: 実装が一段落したら、PR本文を課題・解決策・テ�
 承認後、`gh pr create` で本文を渡して作成する。CIとAI相互レビューが
 回るので、その結果が出てから人間のレビューへ回す。
 ```
+
+CopilotはCLI・対応IDEのagent modeで使う。通常のChatなど、スキルや委任に対応しない画面とは区別する。
+
 ---
 
 ## A.2 テスト装置の実物一式
@@ -638,7 +771,7 @@ CIで試験設定・UAMI認証・pool排他・所有記録を準備し、E2E後�
 
 ## A.3 プランドキュメントの完全版
 
-作成先：`.claude/plans/platform-landing-zone.md`。要件・設計・テスト・実装順を8項目にまとめ、実装とレビューの共通基準にする。
+作成先（3ツール共通）：`docs/plans/platform-landing-zone.md`。要件・設計・テスト・実装順を8項目にまとめる。いずれのツールも、プロンプトで保存先・読込先を明示する。
 
 ```markdown
 # プラン: CAFに沿ったAzure Platform Landing Zoneの新規構築
@@ -724,7 +857,7 @@ E2E（Go＋Terratest＋testify、Azure CLI／API）:
 2. アドレス計算・命名: 失敗する単体テスト→最小実装（定型処理はサブエージェント）。
 3. 階層・Policy・RBAC・管理監視: 失敗する結合/E2E→AVMを接続する（中核は主担当）。
 4. Firewall・DNS・Bastion・ExpressRoute: 通信E2E→構成、後始末まで通す（主担当）。
-5. 設計整合・テスト網羅・セキュリティの3体で独立レビューし、P0/P1を修正する。
+5. 設計整合・テスト網羅・セキュリティの3担当で独立レビューし、P0/P1を修正する。
 
 ## 7. コミット前テスト実行
 
@@ -743,7 +876,13 @@ E2E（Go＋Terratest＋testify、Azure CLI／API）:
 
 ## A.4 8ステップを回すためのプロンプト
 
-以下は各工程でAIへ渡す依頼文。ファイルとして作る必要はなく、対象のプランやコードを指定して使う。
+以下の依頼文は3ツールで共通に使う。保存先は `docs/plans/` に統一する。
+
+| ツール | 渡し方 |
+| --- | --- |
+| Claude Code | チャットへ依頼文と対象パスを渡す |
+| Codex | CLI／IDEの会話へ依頼文と対象パスを渡す |
+| GitHub Copilot | CLI／IDEのエージェント会話へ依頼文と対象パスを渡す |
 
 ### A.4.1 1. プランドキュメントの作成（インタビュー式）
 
@@ -753,7 +892,7 @@ E2E（Go＋Terratest＋testify、Azure CLI／API）:
 
 まず実装に入らず、プランを書くために必要な質問を私にすること。
 技術面・エッジケース・トレードオフについて、答えにくい質問ほど価値がある。
-質問が尽きたら、プランを .claude/plans/[ファイル名].md に
+質問が尽きたら、プランを docs/plans/[ファイル名].md に
 8項目（概要・背景・詳細設計・テスト影響範囲・新規テストケース・実装順・コミット前テスト実行・スコープ外）で書き出すこと。
 実装順には、どのタスクをどのモデル・サブエージェントに任せるかの割り当てまで書くこと。
 ```
@@ -761,7 +900,7 @@ E2E（Go＋Terratest＋testify、Azure CLI／API）:
 ### A.4.2 2. プランのAI相互レビュー（観点別）
 
 ```text
-.claude/plans/[プランファイル].md をレビューすること。私は書いた本人ではない前提で読む。
+docs/plans/[プランファイル].md をレビューすること。私は書いた本人ではない前提で読む。
 観点: [設計整合性/セキュリティ/運用/ビジネス整合性 から1つ]。
 判定の基準: [docs/rules/の該当ルール または 要件定義ファイル]。
 指摘はP0（実装前に必ず直す）/P1（推奨）/P2（軽微）に分類し、
@@ -771,7 +910,7 @@ E2E（Go＋Terratest＋testify、Azure CLI／API）:
 ### A.4.3 3. テスト網羅のレビュー
 
 ```text
-.claude/plans/[プランファイル].md の「新規テストケース」だけをレビューすること。
+docs/plans/[プランファイル].md の「新規テストケース」だけをレビューすること。
 要件定義の受け入れシナリオと突き合わせ、
 (1) シナリオに対応するテストが欠けていないか
 (2) 境界値の両側・異常系が入っているか
@@ -782,7 +921,7 @@ E2E（Go＋Terratest＋testify、Azure CLI／API）:
 ### A.4.4 4. 実装
 
 ```text
-.claude/plans/[プランファイル].md の実装順に従って実装すること。
+docs/plans/[プランファイル].md の実装順に従って実装すること。
 プランの割り当てどおり、[調査/ユーティリティ]はサブエージェントに任せてよい。
 プランにない変更が必要になったら、実装せずに立ち止まって報告すること。
 ```
@@ -796,10 +935,10 @@ E2E（Go＋Terratest＋testify、Azure CLI／API）:
 最後に[コミット前テスト実行のコマンド]を実行し、全通過の出力を見せること。
 ```
 
-### A.4.6 6. 実装のAI相互レビュー（観点別並列）
+### A.4.6 6. 実装のAI相互レビュー（観点別）
 
 ```text
-実装が終わったら、次の3体のサブエージェントを並列で起動し、
+実装が終わったら、A.1.7の方法で次の3担当に独立してレビューを依頼し、
 報告をP0からP2に整理して返すこと。
 - design-reviewer: プランドキュメントとの乖離
 - edge-case-reviewer: 異常系と境界値の抜け
@@ -812,7 +951,7 @@ E2E（Go＋Terratest＋testify、Azure CLI／API）:
 実装した[機能名]について、レビューする私に説明すること。判定はしなくてよい。
 1. 変更の要点を、データの流れがわかる粒度で説明する。
 2. 設計判断を3つまで挙げ、それぞれ採らなかった選択肢と併記する。
-3. 各判断の根拠が .claude/plans/[プランファイル].md のどこにあるかを引用して示す。
+3. 各判断の根拠が docs/plans/[プランファイル].md のどこにあるかを引用して示す。
    プランに書いていないものは「実装時の判断」と明示する。
 4. 壊れたときに影響が大きい箇所を、理由とともに挙げる。
 根拠を確認できないものは推測で埋めず「不明」と答えること。
@@ -829,4 +968,4 @@ E2E（Go＋Terratest＋testify、Azure CLI／API）:
 テストが赤くなったら、その変更を巻き戻して報告すること。
 ```
 
-
+公式仕様：[Claude Code（指示・ルール）](https://code.claude.com/docs/en/memory)／[Codex（指示・設定）](https://developers.openai.com/codex/guides/agents-md)／[GitHub Copilot（リポジトリ指示）](https://docs.github.com/en/copilot/how-tos/copilot-on-github/customize-copilot/add-custom-instructions/add-repository-instructions)。各ツールの対応版を使用し、モデル・権限は利用環境側で設定する。
