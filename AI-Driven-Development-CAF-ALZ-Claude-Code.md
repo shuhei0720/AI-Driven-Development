@@ -180,37 +180,6 @@ CAFに沿った共通基盤を東日本に構築する。管理グループ・Po
 - ルールと仕様書が矛盾した場合は、推測で進めず作業を止めて矛盾を報告する
 ```
 
-#### パスに応じたルールの選択
-
-ルール本文は `docs/rules/` に置き、次の入口から読む。
-
-作成先：`.claude/rules/architecture.md`。Terraform・基盤構成の変更時に適用する。
-
-```markdown
----
-paths: ["**/*.tf", "lib/**", "scripts/**", ".github/workflows/**"]
----
-作業前に docs/rules/architecture.md を読む。
-```
-
-作成先：`.claude/rules/testing.md`。テストや実行設定の変更時に適用する。
-
-```markdown
----
-paths: ["tests/**", "scripts/test.sh", ".github/workflows/**"]
----
-作業前に docs/rules/testing.md を読む。
-```
-
-作成先：`.claude/rules/review.md`。レビューの基準を読み込む。
-
-```markdown
----
-paths: ["**"]
----
-レビュー時に docs/rules/review.md を読む。
-```
-
 ### A.1.2 ルールファイル　－　アーキテクチャ
 作成先：`docs/rules/architecture.md`。ファイル構成、責務の分け方、機能間の依存を決める。
 
