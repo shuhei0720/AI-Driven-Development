@@ -72,23 +72,12 @@ AIレビューの振動を防ぐため、レビューと修正は3周以内に�
 ## 前提
 GitHubのリポジトリを使用していること。各社のAI駆動開発のプラクティスはGitHubによるバージョン管理・AIからの読み取り・ブランチによる開発・レビューの仕組みを前提として作られている。
 
-
-## 実践サンプルの前提
-
-写真の書籍付録Aと同じA.1〜A.5の構成で、題材を「CAFに沿ったAzure Platform Landing Zoneの新規構築」に置き換える。ルール・レビュー定義・スキル・テスト・プラン・8ステップのプロンプト・チェックリストを一式で示す。
-
-- EA契約、東日本（`japaneast`）の単一リージョン。公式ALZの管理グループ階層・Policyを基準に、Management・Connectivity・Identity・Securityを分離する。
-- Acceleratorは使わず、公式AVMを部品として、root Terraform・GitHub Actions・Bash・テストを自作する。Azure認証はユーザー割り当てマネージドIDへのOIDCフェデレーション。
-- Hub-SpokeにFirewall Standard・Bastion Standard・ErGw1AZ・Private DNS・DNS Private Resolverを配置する。Spoke間とオンプレミスとの通信はFirewallを経由し、明示的に許可した通信だけ通す。有償DDoSとVPN Gatewayは初期構成では無効にする。
-- 各PRで別テナントの実Azure E2Eを実行し、最新commitの検証・後始末の成功をマージ条件にする。固定の試験環境を保持し、今回作成した基盤だけを削除する。
-
-**実装はテストから始める。** A.4のステップ4でも、A.1のルールと`tdd`スキルに従い、1件ずつRed→Green→Refactorを回す。ステップ5はテストの後付けではなく、プランとの対応・網羅・全通過を確認する工程である。
-
-以下は作成するリポジトリのファイル内容を示すサンプルであり、Terraformプロジェクト全体の配布物ではない。書籍と同様に共通ヘルパーの実装は省略し、契約と検証対象を明記する。実Azureでの試験結果はまだない。
+題材を「CAFに沿ったAzure Platform Landing Zoneの新規構築」にとして例を示す。ルール・レビュー定義・スキル・テスト・プラン・8ステップのプロンプト・チェックリストを一式で示す。
 
 ## A.1 リポジトリ装置の実物一式
 
 ### A.1.1 エージェント向けREADME（AGENTS.md）
+まずはエージェント用のメインとなるルールファイルを作成する。
 
 ```markdown
 # Azure Platform Landing Zone
@@ -105,7 +94,8 @@ CAFに沿った共通基盤を東日本に構築する。管理グループ・Po
 
 - `main.management.groups.tf`、`main.management.resources.tf`、`main.connectivity.tf` — 責務ごとのAVM呼び出し
 - `modules/settings/` — 命名・アドレス・Policyパラメータの純粋な変換
-- `lib/` — 管理グループ階層・archetype・Policyの定義、`scripts/` — 実行制御と共通処理
+- `lib/` — 管理グループ階層・archetype・Policyの定義
+- `scripts/` — 実行制御と共通処理
 - `tests/` — 単体テスト（unit/）、結合テスト（integration/）、実AzureのE2E（e2e/）
 - `docs/rules/` — 開発ルール。作業前に下表の該当ファイルを読むこと
 
@@ -129,7 +119,8 @@ CAFに沿った共通基盤を東日本に構築する。管理グループ・Po
 - ルールと仕様書が矛盾した場合は、推測で進めず作業を止めて矛盾を報告する
 ```
 
-### A.1.2 ルールファイル（1）アーキテクチャ
+### A.1.2 ルールファイル　－　アーキテクチャ
+次に詳細なルールファイルを作成していく。まずはファイル構成、ファイルごとの責務などのアーキテクチャを定義するルールを作成する。
 
 ```markdown
 ---
@@ -180,7 +171,8 @@ paths:
 - 狙いは、複雑なロジックを外部依存なしでテストできる形にすること
 ```
 
-### A.1.3 ルールファイル（2）テスト
+### A.1.3 ルールファイル - テスト
+次にテストに関するルールファイルを作成する。
 
 ```markdown
 ---
@@ -256,7 +248,8 @@ test "$(jq -r '.error.code' deny-response.json)" = "RequestDisallowedByPolicy"
 - 識別にはrun ID・resource ID・Policy IDを優先し、表示名に依存しない
 ```
 
-### A.1.4 ルールファイル（3）レビュー
+### A.1.4 ルールファイル - レビュー
+次にレビューのルールファイルを作成する。
 
 ```markdown
 ---
@@ -297,7 +290,8 @@ paths:
 - 差分を読むAIレビューでは、Policyの実効性・経路の取り違え・修復の待ち続けといった実行時のバグは捕まらない。配置や実行時の挙動を変えたら、最後は専用Azure環境で動かして確かめる
 ```
 
-### A.1.5 ルールファイル（4）ロギング
+### A.1.5 ルールファイル - ロギング
+次にロギングのルールファイルを作成する。
 
 ```markdown
 ---
@@ -342,7 +336,8 @@ echo "ExpressRoute authorization: $authorization_key"
 log_info "alz.connectExpressRoute" "$run_id"
 ```
 
-### A.1.6 ルールファイル（5）Terraform state
+### A.1.6 ルールファイル - Terraform state
+次にデータ関連（今回はstate）のルールファイルを作成する。
 
 ```markdown
 ---
@@ -375,8 +370,12 @@ paths:
 ```
 
 ### A.1.7 サブエージェント定義の編成一式
+サブエージェントの定義を作成する。
+レビュー等を各観点で実施する場合に指定して使う。
 
 `.claude/agents/`
+
+#### プランレビューエージェント
 
 ```markdown
 ---
@@ -398,6 +397,8 @@ tools: Read, Grep, Glob, Bash
 報告形式：P0（プランと矛盾する実装）/ P1（条件の実装漏れの疑い）/
 P2（プラン外だが無害な変更）。各指摘に file:line と根拠を添える。
 ```
+
+#### テストレビューエージェント
 
 ```markdown
 ---
@@ -421,9 +422,25 @@ tools: Read, Grep, Glob, Bash
 P2（防御的な改善提案）。各指摘に file:line と、壊れる入力の実例を添える。
 ```
 
-3体目のsecurity-reviewerは、第7章に掲げた定義そのままである（再掲はしない）。
+#### セキュリティレビューエージェント
+
+```markdown
+---
+name: security-reviewer
+description: 実装後の差分をセキュリティ観点でレビューする
+model: opus
+tools: Read, Grep, Glob, Bash
+---
+
+あなたはセキュリティ専任のレビューアーである。
+渡された差分と開発ルール（docs/rules/）だけを読み、実装の経緯は考慮しない。
+観点は3つにしぼる。入力値の検証、認可の抜け、秘密情報のログ出力。
+指摘はP0（修正必須）からP2（提案）に分類して報告する。
+```
+
 
 ### A.1.8 スキルの実例（4本）
+次にスキルの例を以下に示す。
 
 #### テスト駆動開発の実行手順
 
@@ -1041,41 +1058,3 @@ E2E（Terraform CLI＋Azure API）:
 - [ ] 3層レビューをCIで機械化した（テスト＝全コード／AIレビュー＝全PR／人間＝重要箇所。必須チェックとブランチ保護）
 - [ ] コアと非コアの線を引いた（コア＝決済・認証・データ削除・権限は必ず人間レビュー）
 - [ ] パイロットチームから始めた（全社一斉にしない。成功をテンプレート化して横展開）
-
-## サンプル構成と参照資料
-
-### アドレス・SKU
-
-| 対象 | 初期値 |
-| --- | --- |
-| Hub / Corp Spoke / Online Spoke | `10.100.0.0/16` / `10.101.0.0/16` / `10.102.0.0/16` |
-| オンプレミス | サンプル値`172.20.0.0/16`。実接続前に接続先との重複を検査する |
-| AzureFirewallSubnet | `10.100.0.0/26` |
-| AzureFirewallManagementSubnet | `10.100.4.0/26`（管理NICを有効にする追加設計） |
-| AzureBastionSubnet / GatewaySubnet | `10.100.1.0/26` / `10.100.2.0/26` |
-| DNS Resolver inbound / outbound | `10.100.3.0/28` / `10.100.3.16/28` |
-| 各Spokeのapp / Private Endpoint | 各`/16`内の`.0.0/24` / `.1.0/24` |
-| Firewall / Bastion / ER Gateway | Standard / Standard / ErGw1AZ |
-| DDoS Network・IP Protection / VPN Gateway | 無効。AVMの有効フラグとPolicyパラメータで明示する |
-
-### テスト環境と費用・時間の初期案
-
-試験テナント・親管理グループ・サブスクリプションpool・ID・state保存先・開通済みExpressRoute回線は固定fixtureとして保持する。Gateway・Connectionを含む試験作成物は毎回削除する。回線は廃止しない。オンプレミス疎通には固定fixture側に試験送信元と経路広告も必要である。
-
-Policyは実効パラメータ・継承・除外を展開し、有効なDeny／DenyAction／Modify／Append／DeployIfNotExistsの全対象と試験を対応づける。代表例の成功だけで全体を合格にしない。Audit系は割当・パラメータの照合を必須とし、実際の監査イベントの検証は初期版の必須対象から外す。
-
-公開JPY単価で把握した基盤費用は約399円／時、6時間で約2,394円。Log Analyticsを5GB取り込む例では別途約2,642円。Policyごとの追加リソース・ディスク・通信・runner等と、常設fixtureの費用は別に積み上げる。EA契約単価・割引・税は未反映。
-
-初期の運用案は**1PRあたり1万円、主処理4時間＋独立した後始末2時間**。全動作系Policyの費用・時間は未実測なので、初回pilotで妥当性を確認する。これは承認済みの課金額や強制停止を保証する上限ではない。枠を超える場合は見積り・試験配置を見直し、必須試験をskipしない。削除失敗時はCI失敗・pool隔離として復旧する。
-
-### 公式コードの参照先
-
-参照時点の固定候補はTerraform `~> 1.12`、AzureRM `~> 4.0`、AzAPI `~> 2.0`、ALZ provider `~> 0.21`、ALZ AVM `0.21.0`、Management AVM `0.9.0`、Hub-Spoke AVM `0.17.2`、ALZ Library `2026.10.0`。実装では依存制約を照合し、providerのlockファイルも管理する。
-
-- [CAF Azure Landing Zones](https://learn.microsoft.com/en-us/azure/cloud-adoption-framework/ready/landing-zone/)
-- [ALZ AVM：管理グループ・Policy](https://github.com/Azure/terraform-azurerm-avm-ptn-alz/tree/v0.21.0)
-- [Management AVM：管理・監視](https://github.com/Azure/terraform-azurerm-avm-ptn-alz-management/tree/v0.9.0)
-- [Hub-Spoke AVM：共通ネットワーク](https://github.com/Azure/terraform-azurerm-avm-ptn-alz-connectivity-hub-and-spoke-vnet/tree/v0.17.2)
-- [ALZ Library：標準階層・Policy定義](https://github.com/Azure/Azure-Landing-Zones-Library/tree/platform/alz/2026.10.0/platform/alz)
-- [公式AVMテストの共通処理](https://github.com/Azure/avm-terraform-tools)、[Terraform Test](https://developer.hashicorp.com/terraform/language/tests)
-- [調査・ヒアリング記録と価格計算の詳細](docs/CAF-ALZ-research.md)
