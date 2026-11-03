@@ -469,309 +469,82 @@ description: 実装が一段落したら、PR本文を課題・解決策・テ�
 
 ## A.2 テスト装置の実物一式
 
+以下は検証部分の抜粋。準備・反映待ち・後始末は[実装・設定例](docs/ALZ-test-reference.md)にまとめる。
+
 ### A.2.1 単体テストの実物
 
-入力と計算結果をTerraform Testで確認する。次の3ファイルに分けて作成する。
-
-- `main.management.groups.tf`：AVMを呼び出すルート構成。
-- `modules/settings/main.tf`：アドレスの検証とサブネットの計算。
-- `tests/unit/settings.tftest.hcl`：設計どおりの値と、不正入力の拒否を確認するテスト。
+作成先：`tests/unit/settings.tftest.hcl`。アドレス計算と不正入力の拒否を確認する。
 
 ```hcl
-# main.management.groups.tf — 公式AVMを、自分たちのルートから呼ぶ
-module "settings" {
-  source = "./modules/settings"
-}
-module "management_groups" {
-  source             = "Azure/avm-ptn-alz/azurerm"
-  version            = "0.21.0"
-  architecture_name  = "alz"
-  location           = module.settings.location
-  parent_resource_id = var.parent_management_group_id
-}
-
-# modules/settings/main.tf — Azureに接続しないアドレス計算
-variable "hub_cidr" {
-  type    = string
-  default = "10.100.0.0/16"
-  validation {
-    condition     = can(cidrnetmask(var.hub_cidr)) && try(split("/", var.hub_cidr)[1] == "16", false)
-    error_message = "HubにはIPv4の/16を指定する。"
-  }
-}
-output "location" { value = "japaneast" }
-output "subnets" {
-  value = try({
-    firewall   = cidrsubnet(var.hub_cidr, 10, 0)
-    gateway    = cidrsubnet(var.hub_cidr, 10, 8)
-    bastion    = cidrsubnet(var.hub_cidr, 10, 4)
-    dns_in     = cidrsubnet(var.hub_cidr, 12, 48)
-    dns_out    = cidrsubnet(var.hub_cidr, 12, 49)
-    management = cidrsubnet(var.hub_cidr, 10, 16)
-  }, {})
-}
-
-# tests/unit/settings.tftest.hcl — native Terraform Test
-run "sample_subnet_contract" {
+run "bastion_subnet" {
   command = plan
   module { source = "./modules/settings" }
   assert {
-    condition = output.location == "japaneast" && output.subnets == {
-      firewall = "10.100.0.0/26", gateway = "10.100.2.0/26"
-      bastion  = "10.100.1.0/26", management = "10.100.4.0/26"
-      dns_in   = "10.100.3.0/28", dns_out = "10.100.3.16/28"
-    }
-    error_message = "合意したリージョン・サブネット配置と一致すること。"
+    condition     = output.subnets.bastion == "10.100.1.0/26"
+    error_message = "Bastionのサブネットは10.100.1.0/26であること。"
   }
 }
-run "prefix_15_is_rejected" {
-  command = plan
-  module { source = "./modules/settings" }
-  variables { hub_cidr = "10.100.0.0/15" }
-  expect_failures = [var.hub_cidr]
-}
+
 run "prefix_17_is_rejected" {
   command = plan
   module { source = "./modules/settings" }
   variables { hub_cidr = "10.100.0.0/17" }
   expect_failures = [var.hub_cidr]
 }
-run "invalid_cidr_is_rejected" {
-  command = plan
-  module { source = "./modules/settings" }
-  variables { hub_cidr = "10.100.0.0/33" }
-  expect_failures = [var.hub_cidr]
-}
 ```
-
-AVM間の受け渡しは `tests/integration/` で検証する。
 
 ### A.2.2 E2Eテストの実物
 
-作成先：`tests/e2e/platform_test.go`。Azureの実値と期待値を比較する。`t.Run` がテスト名、`require` が合格条件。
+作成先：`tests/e2e/platform_test.go`。デプロイ後の実設定と、再planの差分を確認する。
 
 ```go
-// tests/e2e/platform_test.go
-package e2e
+terraform.InitAndApply(t, opts)
 
-import (
-	"testing"
-
-	"github.com/gruntwork-io/terratest/modules/terraform"
-	"github.com/stretchr/testify/require"
-)
-
-func TestPlatformE2E(t *testing.T) {
-	assertTestTarget(t)
-	opts := terraformOptions(t, "../..", "platform", "TEST_TFVARS")
-	terraform.InitAndApply(t, opts)
-	// ALZ全体の削除は独立cleanup jobが担当する（A.2.4）。
-
-	t.Run("Bastionのサブネットが設計どおり", func(t *testing.T) {
-		id := terraform.Output(t, opts, "bastion_subnet_id")
-		actual := az(t, "network", "vnet", "subnet", "show", "--ids", id,
-			"--query", "addressPrefixes || [addressPrefix]", "-o", "json")
-		require.JSONEq(t, `["10.100.1.0/26"]`, actual)
-	})
-	t.Run("DenyがStorageの公開アクセスを拒否する", testDenyPublicStorage)
-	t.Run("DINEが診断設定を自動配置する", testDeployDiagnostics)
-	t.Run("再planに差分がない", func(t *testing.T) {
-		require.Equal(t, 0, terraform.PlanExitCode(t, opts))
-	})
-}
+t.Run("Bastionのサブネットが設計どおり", func(t *testing.T) {
+    id := terraform.Output(t, opts, "bastion_subnet_id")
+    actual := az(t, "network", "vnet", "subnet", "show", "--ids", id,
+        "--query", "addressPrefixes || [addressPrefix]", "-o", "json")
+    require.JSONEq(t, `["10.100.1.0/26"]`, actual)
+})
+t.Run("再planに差分がない", func(t *testing.T) {
+    require.Equal(t, 0, terraform.PlanExitCode(t, opts))
+})
 ```
 
-作成先：`tests/e2e/policy_test.go`。Denyによる拒否と、DINEによる診断設定の自動配置を確認する。
+作成先：`tests/e2e/policy_test.go`。禁止操作の拒否と、診断設定の自動配置を確認する。
 
 ```go
-// tests/e2e/policy_test.go
-package e2e
+t.Run("公開アクセスが対象Policyで拒否される", func(t *testing.T) {
+    opts.Vars["public_network_access_enabled"] = true
+    _, err := terraform.ApplyE(t, opts)
+    require.Error(t, err)
+    require.Contains(t, err.Error(), "RequestDisallowedByPolicy")
+    require.Contains(t, err.Error(), assignmentID)
+    require.Contains(t, err.Error(), definitionID)
+})
 
-import (
-	"encoding/json"
-	"slices"
-	"strings"
-	"testing"
-	"time"
-
-	"github.com/gruntwork-io/terratest/modules/terraform"
-	"github.com/stretchr/testify/require"
-)
-
-func testDenyPublicStorage(t *testing.T) {
-	opts := terraformOptions(t, "../fixtures/storage-policy", "deny", "TEST_PROBE_TFVARS")
-	opts.Vars = map[string]interface{}{"public_network_access_enabled": false}
-	defer terraform.Destroy(t, opts) // apply前に登録。途中失敗でも後始末する
-	terraform.InitAndApply(t, opts)  // 許可側が成功することを先に確認
-
-	assignmentID := requiredEnv(t, "PUBLIC_STORAGE_DENY_ASSIGNMENT_ID")
-	definitionID := requiredEnv(t, "PUBLIC_STORAGE_DENY_DEFINITION_ID")
-	require.Eventually(t, func() bool {
-		// Policy反映前に成功しても、次回は許可状態に戻してから再試行する。
-		opts.Vars["public_network_access_enabled"] = false
-		if _, err := terraform.ApplyE(t, opts); err != nil {
-			return false
-		}
-		opts.Vars["public_network_access_enabled"] = true
-		_, err := terraform.ApplyE(t, opts)
-		return err != nil && strings.Contains(err.Error(), "RequestDisallowedByPolicy") &&
-			strings.Contains(err.Error(), assignmentID) && strings.Contains(err.Error(), definitionID)
-	}, 15*time.Minute, 30*time.Second, "公開アクセスが対象Policyで拒否されること")
-}
-
-func testDeployDiagnostics(t *testing.T) {
-	opts := terraformOptions(t, "../fixtures/storage-policy", "dine", "TEST_PROBE_TFVARS")
-	opts.Vars = map[string]interface{}{"public_network_access_enabled": false}
-	defer terraform.Destroy(t, opts)
-	terraform.InitAndApply(t, opts) // fixtureは診断設定を自分で作らない
-
-	targetID := terraform.Output(t, opts, "diagnostic_target_id")
-	expected := requiredEnv(t, "EXPECTED_LOG_WORKSPACE_ID")
-	require.Eventually(t, func() bool {
-		out, err := azE(t, "monitor", "diagnostic-settings", "list", "--resource", targetID,
-			"--query", "value[].workspaceId", "-o", "json")
-		if err != nil {
-			return false
-		}
-		var actual []string
-		return json.Unmarshal([]byte(out), &actual) == nil && slices.Contains(actual, expected)
-	}, 30*time.Minute, 20*time.Second, "DINEが指定workspace宛ての診断設定を配置すること")
-}
+t.Run("DINEが指定先への診断設定を配置する", func(t *testing.T) {
+    require.Eventually(t, func() bool {
+        actual := diagnosticWorkspaceIDs(t, targetID)
+        return slices.Contains(actual, expectedWorkspaceID)
+    }, 30*time.Minute, 20*time.Second)
+})
 ```
-
-試験用Terraformは `tests/fixtures/storage-policy/` に置く。入力は `public_network_access_enabled`、出力は `diagnostic_target_id`。診断設定はDINEに作らせ、期待するIDは試験設定から渡す。
-
-A.3の全動作系Policy・修復・配置・権限・通信も試験対象とし、必須ケースの不足はCI失敗とする。
 
 ### A.2.3 テスト基盤の実物
 
-作成先：`tests/e2e/support_test.go`。試験先の確認、state・入力の指定、Azure CLI実行を共通化する。Azure認証はActionsでログインしたUAMIを使う。
+作成先：`tests/e2e/support_test.go`。試験先の確認とAzureからの値取得を共通化する。[コードを見る](docs/ALZ-test-reference.md#共通処理)。
 
-```go
-// tests/e2e/support_test.go
-package e2e
+### A.2.4 テストの実行
 
-import (
-	"encoding/json"
-	"os"
-	"slices"
-	"strings"
-	"testing"
-
-	"github.com/gruntwork-io/terratest/modules/logger"
-	"github.com/gruntwork-io/terratest/modules/shell"
-	"github.com/gruntwork-io/terratest/modules/terraform"
-	"github.com/stretchr/testify/require"
-)
-
-func requiredEnv(t *testing.T, key string) string {
-	t.Helper()
-	value := os.Getenv(key)
-	require.NotEmpty(t, value, "試験設定が必要: %s", key)
-	return value
-}
-
-func assertTestTarget(t *testing.T) {
-	t.Helper()
-	require.Equal(t, requiredEnv(t, "TEST_TENANT_ID"), az(t, "account", "show", "--query", "tenantId", "-o", "tsv"))
-	var pool []string
-	require.NoError(t, json.Unmarshal([]byte(requiredEnv(t, "TEST_SUBSCRIPTION_IDS_JSON")), &pool))
-	require.True(t, slices.Contains(pool, az(t, "account", "show", "--query", "id", "-o", "tsv")))
-}
-
-func terraformOptions(t *testing.T, dir, stateName, varFileEnv string) *terraform.Options {
-	t.Helper()
-	return &terraform.Options{
-		TerraformDir: dir,
-		VarFiles:     []string{requiredEnv(t, varFileEnv)},
-		BackendConfig: map[string]interface{}{
-			"key": "e2e/" + requiredEnv(t, "TEST_RUN_KEY") + "/" + stateName + ".tfstate",
-		},
-		Reconfigure: true, NoColor: true, SetVarsAfterVarFiles: true,
-	}
-}
-
-func azE(t *testing.T, args ...string) (string, error) {
-	t.Helper()
-	return shell.RunCommandAndGetStdOutE(t, shell.Command{
-		Command: "az", Args: args, Logger: logger.Discard,
-	})
-}
-
-func az(t *testing.T, args ...string) string {
-	t.Helper()
-	out, err := azE(t, args...)
-	require.NoError(t, err)
-	return strings.TrimSpace(out)
-}
-```
-
-固定fixtureを照合し、runごとのstate key・所有manifestをrunner外へ保存する。tfvarsは絶対パス、probe名はrun固有とし、共有poolは直列化する。
-
-独立cleanup jobは、probe削除→subscription associationの解除と退避→rootのdestroy→残存確認の順に回収する。固定基盤と回線は保持し、途中停止時もstate・manifestから回収する。失敗したpoolは隔離する。
-
-### A.2.4 テスト設定の実物
-
-作成先：リポジトリ直下の `go.mod`・`go.sum`。Goの依存を管理する。初回は `go mod init example.com/alz-tests`、続けて `go get github.com/gruntwork-io/terratest@v0.48.2 github.com/stretchr/testify@v1.10.0` を実行する。
-
-作成先：`scripts/test.sh`。単体・結合・実Azure E2Eの実行入口をまとめる。
+単体テストと実AzureのE2Eを別コマンドにする。
 
 ```bash
-# scripts/test.sh — 通常実行はAzureへの作成・課金を伴わない
-set -euo pipefail
-case "${1:-unit}" in
-  unit)
-    terraform init -backend=false -test-directory=tests/unit
-    terraform test -test-directory=tests/unit ;;
-  integration)
-    terraform init -backend=false -test-directory=tests/integration
-    terraform test -test-directory=tests/integration ;;
-  e2e)
-    go test -v -count=1 -parallel=1 -timeout=4h ./tests/e2e ;;
-  *) printf 'usage: %s unit|integration|e2e\n' "$0" >&2; exit 2 ;;
-esac
+bash scripts/test.sh unit
+bash scripts/test.sh e2e
 ```
 
-作成先：`.github/workflows/test.yml`。各PRで試験と後始末を実行し、最新commitの両方の成功をマージ条件にする。
-
-```yaml
-# .github/workflows/test.yml — 抜粋。全PRで実行し、最後のcheckを必須にする
-on: [pull_request]
-jobs:
-  e2e:
-    runs-on: ubuntu-latest
-    timeout-minutes: 240
-    permissions: { contents: read, id-token: write }
-    steps:
-      # checkout、Go/Terraform導入、go mod download、UAMIへのOIDCログイン
-      # 固定fixture照合・pool lease取得・所有manifest保存・環境変数設定を先に行う
-      - run: bash scripts/test.sh unit
-      - run: bash scripts/test.sh integration
-      - run: bash scripts/test.sh e2e
-  cleanup:
-    needs: e2e
-    if: always()
-    runs-on: ubuntu-latest
-    timeout-minutes: 120
-    permissions: { contents: read, id-token: write }
-    steps:
-      # 同じcommitをcheckoutし、cleanup用UAMIへOIDCログイン
-      # runner外のmanifestと同じrunの全stateから回収する
-      - run: bash scripts/cleanup.sh "${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-  alz-required:
-    needs: [e2e, cleanup]
-    if: always()
-    runs-on: ubuntu-latest
-    steps:
-      - env:
-          E2E: ${{ needs.e2e.result }}
-          CLEANUP: ${{ needs.cleanup.result }}
-        run: test "$E2E" = success && test "$CLEANUP" = success
-```
-
-取消・runner障害も独立reconcilerで回収する。1回1万円・主処理4時間＋cleanup2時間は初期案で、必須試験をskipして枠に合わせない。
-
-Goコードはコンパイル確認済み。実AzureのE2Eは未実行。
+各PRでE2Eと後始末が成功してからマージする。実AzureのE2Eは未実行。
 
 ## A.3 プランドキュメントの完全版
 
@@ -965,4 +738,5 @@ E2E（Go＋Terratest＋testify、Azure CLI／API）:
 重複した処理の集約、docs/rules/[アーキテクチャルール]との乖離の解消。
 テストが赤くなったら、その変更を巻き戻して報告すること。
 ```
+
 
