@@ -469,8 +469,6 @@ description: 実装が一段落したら、PR本文を課題・解決策・テ�
 
 ## A.2 テスト装置の実物一式
 
-以下は検証部分の抜粋。準備・反映待ち・後始末は[実装・設定例](docs/ALZ-test-reference.md)にまとめる。
-
 ### A.2.1 単体テストの実物
 
 作成先：`tests/unit/settings.tftest.hcl`。アドレス計算と不正入力の拒否を確認する。
@@ -495,56 +493,146 @@ run "prefix_17_is_rejected" {
 
 ### A.2.2 E2Eテストの実物
 
-作成先：`tests/e2e/platform_test.go`。デプロイ後の実設定と、再planの差分を確認する。
+作成先：`tests/e2e/platform_test.go`。デプロイ結果と再planの差分を確認する。Goの例はimport宣言を省略している。
 
 ```go
-terraform.InitAndApply(t, opts)
+func TestPlatformE2E(t *testing.T) {
+	assertTestTarget(t)
+	opts := terraformOptions(t, "../..", "platform", "TEST_TFVARS")
+	terraform.InitAndApply(t, opts)
+	// ALZ全体の削除は独立cleanup jobが担当する（A.2.4）。
 
-t.Run("Bastionのサブネットが設計どおり", func(t *testing.T) {
-    id := terraform.Output(t, opts, "bastion_subnet_id")
-    actual := az(t, "network", "vnet", "subnet", "show", "--ids", id,
-        "--query", "addressPrefixes || [addressPrefix]", "-o", "json")
-    require.JSONEq(t, `["10.100.1.0/26"]`, actual)
-})
-t.Run("再planに差分がない", func(t *testing.T) {
-    require.Equal(t, 0, terraform.PlanExitCode(t, opts))
-})
+	t.Run("Bastionのサブネットが設計どおり", func(t *testing.T) {
+		id := terraform.Output(t, opts, "bastion_subnet_id")
+		actual := az(t, "network", "vnet", "subnet", "show", "--ids", id,
+			"--query", "addressPrefixes || [addressPrefix]", "-o", "json")
+		require.JSONEq(t, `["10.100.1.0/26"]`, actual)
+	})
+	t.Run("DenyがStorageの公開アクセスを拒否する", testDenyPublicStorage)
+	t.Run("DINEが診断設定を自動配置する", testDeployDiagnostics)
+	t.Run("再planに差分がない", func(t *testing.T) {
+		require.Equal(t, 0, terraform.PlanExitCode(t, opts))
+	})
+}
 ```
 
-作成先：`tests/e2e/policy_test.go`。禁止操作の拒否と、診断設定の自動配置を確認する。
+作成先：`tests/e2e/policy_test.go`。許可・拒否と、診断設定の自動配置を確認する。
 
 ```go
-t.Run("公開アクセスが対象Policyで拒否される", func(t *testing.T) {
-    opts.Vars["public_network_access_enabled"] = true
-    _, err := terraform.ApplyE(t, opts)
-    require.Error(t, err)
-    require.Contains(t, err.Error(), "RequestDisallowedByPolicy")
-    require.Contains(t, err.Error(), assignmentID)
-    require.Contains(t, err.Error(), definitionID)
-})
+func testDenyPublicStorage(t *testing.T) {
+	opts := terraformOptions(t, "../fixtures/storage-policy", "deny", "TEST_PROBE_TFVARS")
+	opts.Vars = map[string]interface{}{"public_network_access_enabled": false}
+	defer terraform.Destroy(t, opts) // apply前に登録。途中失敗でも後始末する
+	terraform.InitAndApply(t, opts)  // 許可側が成功することを先に確認
 
-t.Run("DINEが指定先への診断設定を配置する", func(t *testing.T) {
-    require.Eventually(t, func() bool {
-        actual := diagnosticWorkspaceIDs(t, targetID)
-        return slices.Contains(actual, expectedWorkspaceID)
-    }, 30*time.Minute, 20*time.Second)
-})
+	assignmentID := requiredEnv(t, "PUBLIC_STORAGE_DENY_ASSIGNMENT_ID")
+	definitionID := requiredEnv(t, "PUBLIC_STORAGE_DENY_DEFINITION_ID")
+	require.Eventually(t, func() bool {
+		// Policy反映前に成功しても、次回は許可状態に戻してから再試行する。
+		opts.Vars["public_network_access_enabled"] = false
+		if _, err := terraform.ApplyE(t, opts); err != nil {
+			return false
+		}
+		opts.Vars["public_network_access_enabled"] = true
+		_, err := terraform.ApplyE(t, opts)
+		return err != nil && strings.Contains(err.Error(), "RequestDisallowedByPolicy") &&
+			strings.Contains(err.Error(), assignmentID) && strings.Contains(err.Error(), definitionID)
+	}, 15*time.Minute, 30*time.Second, "公開アクセスが対象Policyで拒否されること")
+}
+
+func testDeployDiagnostics(t *testing.T) {
+	opts := terraformOptions(t, "../fixtures/storage-policy", "dine", "TEST_PROBE_TFVARS")
+	opts.Vars = map[string]interface{}{"public_network_access_enabled": false}
+	defer terraform.Destroy(t, opts)
+	terraform.InitAndApply(t, opts) // fixtureは診断設定を自分で作らない
+
+	targetID := terraform.Output(t, opts, "diagnostic_target_id")
+	expected := requiredEnv(t, "EXPECTED_LOG_WORKSPACE_ID")
+	require.Eventually(t, func() bool {
+		out, err := azE(t, "monitor", "diagnostic-settings", "list", "--resource", targetID,
+			"--query", "value[].workspaceId", "-o", "json")
+		if err != nil {
+			return false
+		}
+		var actual []string
+		return json.Unmarshal([]byte(out), &actual) == nil && slices.Contains(actual, expected)
+	}, 30*time.Minute, 20*time.Second, "DINEが指定workspace宛ての診断設定を配置すること")
+}
 ```
 
 ### A.2.3 テスト基盤の実物
 
-作成先：`tests/e2e/support_test.go`。試験先の確認とAzureからの値取得を共通化する。[コードを見る](docs/ALZ-test-reference.md#共通処理)。
+作成先：`tests/e2e/support_test.go`。認証先・state・Azureからの値取得を共通化する。
+
+<details>
+<summary>共通処理のコード</summary>
+
+```go
+func requiredEnv(t *testing.T, key string) string {
+	t.Helper()
+	value := os.Getenv(key)
+	require.NotEmpty(t, value, "試験設定が必要: %s", key)
+	return value
+}
+
+func assertTestTarget(t *testing.T) {
+	t.Helper()
+	require.Equal(t, requiredEnv(t, "TEST_TENANT_ID"), az(t, "account", "show", "--query", "tenantId", "-o", "tsv"))
+	var pool []string
+	require.NoError(t, json.Unmarshal([]byte(requiredEnv(t, "TEST_SUBSCRIPTION_IDS_JSON")), &pool))
+	require.True(t, slices.Contains(pool, az(t, "account", "show", "--query", "id", "-o", "tsv")))
+}
+
+func terraformOptions(t *testing.T, dir, stateName, varFileEnv string) *terraform.Options {
+	t.Helper()
+	return &terraform.Options{
+		TerraformDir: dir,
+		VarFiles:     []string{requiredEnv(t, varFileEnv)},
+		BackendConfig: map[string]interface{}{
+			"key": "e2e/" + requiredEnv(t, "TEST_RUN_KEY") + "/" + stateName + ".tfstate",
+		},
+		Reconfigure: true, NoColor: true, SetVarsAfterVarFiles: true,
+	}
+}
+
+func azE(t *testing.T, args ...string) (string, error) {
+	t.Helper()
+	return shell.RunCommandAndGetStdOutE(t, shell.Command{
+		Command: "az", Args: args, Logger: logger.Discard,
+	})
+}
+
+func az(t *testing.T, args ...string) string {
+	t.Helper()
+	out, err := azE(t, args...)
+	require.NoError(t, err)
+	return strings.TrimSpace(out)
+}
+```
+
+</details>
+
+試験用Terraformは`tests/fixtures/storage-policy/`に置き、入力`public_network_access_enabled`と出力`diagnostic_target_id`を用意する。診断設定はDINEに作らせる。
 
 ### A.2.4 テストの実行
 
-単体テストと実AzureのE2Eを別コマンドにする。
+作成先：`scripts/test.sh`。単体・結合・実Azure E2Eを別コマンドにする。
 
 ```bash
-bash scripts/test.sh unit
-bash scripts/test.sh e2e
+set -euo pipefail
+case "${1:-unit}" in
+  unit|integration)
+    kind="${1:-unit}"
+    terraform init -backend=false -test-directory="tests/$kind"
+    terraform test -test-directory="tests/$kind" ;;
+  e2e) go test -v -count=1 -parallel=1 -timeout=4h ./tests/e2e ;;
+  *) exit 2 ;;
+esac
 ```
 
-各PRでE2Eと後始末が成功してからマージする。実AzureのE2Eは未実行。
+Go 1.23・Terratest `v0.48.2`・testify `v1.10.0`を使用し、依存はリポジトリ直下の`go.mod`・`go.sum`で管理する。
+
+CIで試験設定・UAMI認証・pool排他・所有記録を準備し、E2E後は独立jobでprobe削除→subscription退避→基盤削除→残存確認を行う。固定基盤と回線を保持し、最新commitの試験・後始末の成功をマージ条件にする。実AzureのE2Eは未実行。
 
 ## A.3 プランドキュメントの完全版
 
