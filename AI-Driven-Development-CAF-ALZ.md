@@ -1090,3 +1090,67 @@ Microsoftの推奨はALZ IaC AcceleratorとAzure Verified Modules（AVM）を使
 
 テスト基盤の第一候補はTerraform Test。追加の実状態・通信検証の方法は、受け入れ条件から選ぶ。テストの期待値は実装コードや公式サンプルの出力ではなく、合意した要件を出典にする。専用サブスクリプションだけでなく、試験用の親管理グループ・権限・課金・後始末の範囲もヒアリングする。
 
+### 9. ヒアリング記録
+
+| 項目 | 合意した内容 |
+| --- | --- |
+| 開発の進め方 | テスト駆動。合格条件の中心は、意図した構成のデプロイとPolicyの実効性 |
+| 実装方式 | 公式AVMを部品として利用し、Terraformの構成・CI/CD・テストを自作。Acceleratorによる生成・bootstrapは使わない |
+| 対象 | 新規のPlatform Landing Zone全体。管理グループ・Policy・RBAC・共通ネットワーク・監視 |
+| リージョン | 東日本（japaneast）の単一リージョン |
+| 管理グループ | 公式ALZ標準を基準。Management・Connectivity・Identity・Securityのサブスクリプション分割を含める |
+| Policy | 公式ALZ標準セットを基準にする |
+| ネットワーク | Hub-Spoke。Azure Firewall・Private DNS・DNS Private Resolver・Azure Bastion・ExpressRouteを含める |
+| Spoke間通信 | Firewallを経由し、明示的に許可した通信だけを通す |
+| ExpressRouteの試験 | 開通済み試験回線を保持し、Azure側のGateway・Connection等を毎回作成・削除する |
+| E2E環境 | 別テナントに試験用基盤を用意し、試験時に作成、検証後に削除する |
+| アドレス | 次節のHub・2本の試験用Spoke・オンプレ側のサンプルアドレスを採用 |
+
+固定で保持する土台と毎回削除するリソースの詳細、Policy実効性試験の初期範囲、CIの実行・マージ条件はヒアリング中。
+
+### 10. 合意したサンプルアドレス案
+
+| VNet・用途 | CIDR |
+| --- | --- |
+| Hub VNet | `10.100.0.0/16` |
+| Hub / AzureFirewallSubnet | `10.100.0.0/26` |
+| Hub / AzureBastionSubnet | `10.100.1.0/26` |
+| Hub / GatewaySubnet | `10.100.2.0/26` |
+| Hub / DNS Resolver inbound専用 | `10.100.3.0/28` |
+| Hub / DNS Resolver outbound専用 | `10.100.3.16/28` |
+| Corpの試験用Spoke | `10.101.0.0/16` |
+| Corp / アプリ用 | `10.101.0.0/24` |
+| Corp / Private Endpoint用 | `10.101.1.0/24` |
+| Onlineの試験用Spoke | `10.102.0.0/16` |
+| Online / アプリ用 | `10.102.0.0/24` |
+| Online / Private Endpoint用 | `10.102.1.0/24` |
+| オンプレ側のサンプル範囲 | `172.20.0.0/16` |
+
+提案内のVNet間の非重複、サブネットの境界・包含・非重複を確認済み。実接続時には、接続先が広告する全範囲との重複を確認する。DNS Resolverの各サブネットは専用とし、必要な委任を設定する。FirewallのSKU・管理NICによって追加サブネットが必要な場合は、SKU決定時に反映する。
+
+参照：[専用サブネットの要件](https://learn.microsoft.com/en-us/azure/networking/design-guide/vnets-subnets)、[ExpressRoute GatewaySubnet](https://learn.microsoft.com/en-us/azure/expressroute/expressroute-about-virtual-network-gateways)
+
+ExpressRoute回線の開通・廃止には事業者側の工程があるため、開通済み回線を外部fixtureとして扱う。試験で作成したGateway・Connection等と、保持する回線をstate・削除範囲で区別する。疎通試験では、回線の作成状態だけでなくprivate peering・BGP・経路・対向の実アプリ応答を確認する。
+
+参照：[ExpressRouteの開通と状態](https://learn.microsoft.com/en-us/azure/expressroute/expressroute-workflows)
+
+### 11. 受け入れテストの具体化方針
+
+以下は合意した目的から作るテスト一覧の骨格。対象Policy・パラメータ・権限・通信条件を確定してから、ケースごとの期待値を人間と確認する。
+
+| 対象 | 構成を確認するテスト | 実Azureで効果を確認するテスト |
+| --- | --- | --- |
+| デプロイ | 作成対象、名前、配置、入力制約、構成値 | 管理グループ階層、Policy・RBAC、ネットワーク、監視の実状態を要件と照合 |
+| Policy割当 | 定義、パラメータ、scope、enforcement、除外 | 実際の割当と継承が期待どおりであること |
+| Deny | 許可・違反入力の組み合わせ | 同じID・操作で許可ケースが成功し、違反ケースが期待するPolicyによって拒否されること |
+| Audit | 検知条件と対象 | 操作は成功し、対象が評価後に非準拠になること |
+| Modify | 変更条件とプロパティ | 書き込み後の実値を確認。既存リソースの修復は別ケース |
+| DeployIfNotExists | 配置条件、設定、実行用権限 | 評価・修復後に期待するリソースと設定値が存在すること |
+| RBAC | principal・role・scope | 試験用IDで、許可する操作が成功し、禁止操作が拒否されること |
+| Firewall・経路 | peering、UDR、Firewallルール | 許可したSpoke間通信の実アプリ応答と、不許可通信の拒否を確認。該当フローのログ・経路も照合 |
+| ExpressRoute・DNS | Gateway、Connection、名前解決の設定 | 開通済み回線を通じた通信とPrivate DNS・オンプレDNS連携の実応答 |
+| 再適用 | 入力変更時の差分 | 再planの差分ゼロ、再apply後のリソースID維持 |
+| 後始末 | 削除対象を試験の作成記録で限定 | 成功・部分失敗の双方で作成物を片付け、残存を検出。外部fixtureは保持 |
+
+偽陽性を避けるため、Policyによる拒否をRBACの`AuthorizationFailed`等と区別する。`RequestDisallowedByPolicy`と期待するPolicy IDを照合し、無関係な失敗では合格にしない。非同期の評価・修復には期限を設け、待機切れをskipや成功扱いにしない。通信もTCP接続だけでなく、制御した宛先の実アプリ応答まで確認する。
+
