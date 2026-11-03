@@ -2,7 +2,6 @@
 
 # 概要
 本ページでは、AI駆動開発の概念と実践方法についてまとめる。
-書籍「プロフェッショナル AI駆動開発（技術評論社）を参考にした内容である。
 
 # AI駆動開発とは
 AI駆動開発は、AIに指示をしてコードを開発させる開発手法である。
@@ -16,6 +15,8 @@ AI駆動開発は Y = F(X) という式で理解できる。
 | X | AIへの入力コンテキスト |
 | Y | AIからの出力 |
 | F | AIのモデル |
+
+![AI駆動開発の全体像：コンテキストをAIへ渡し、出力をテストとレビューで確認する](assets/ai-driven-development/overview.png)
 
 つまり、AI駆動開発は、AIに与えるX（コンテキスト）、Y（出力の精査）、F（AIのモデルと使い方）の三つの要素を制御して最高の結果を得ることが重要になる。
 
@@ -41,6 +42,8 @@ AIへの入力（コンテキスト）は以下がある。
 - 外部情報（MCPやCLIで取得）
 - 対話履歴
 
+![AIに渡すコンテキストの7要素](assets/ai-driven-development/context-elements.png)
+
 コンテキストエンジニアリングはこれらの要素を最適化し、AIから最高の結果を得るための方法論である。
 特に、コードベースについては汚染されると、次の X として入力されるため、次の出力も汚染され続ける悪循環の陥る。
 
@@ -52,6 +55,8 @@ AIからの出力の特性として、同じ質問をしても同じ内容が必
 
 テスト駆動開発の実践内容としては、ルールによって実装前に必ずテストを作成する・テスト内容は人間が必ずレビューする・CIによってマージの条件としてテストの合格を必須にするという内容である。
 
+![要件と合格条件から始め、テスト・実装・改善を繰り返す開発ループ](assets/ai-driven-development/tdd-loop.png)
+
 ## オーケストレーション
 実装させたAIに、レビューをさせると、自己評価が高くなり正常に評価しないという問題がある。
 後に説明するが、AIの相互レビューは実装の経緯を知らないAIに観点を分けて（ルール準拠、ファイル構造、SSOT、セキュリティ、テスト）レビューさせる必要がある。
@@ -60,6 +65,9 @@ AIからの出力の特性として、同じ質問をしても同じ内容が必
 その際、サブエージェントにレビューを分けてオーケストレーションする方法等を紹介する。
 
 ## AI相互レビュー
+
+![変更差分をセキュリティ・テスト・設計・ルールの観点から独立して読む](assets/ai-driven-development/independent-review.png)
+
 上記で、X・Y・Fを制御したうえに必要なのがAIによる相互レビューである。
 
 各観点を専門とするレビューエージェントを定義し、テストの合格後にテストでは拾えない観点（ルールへの準拠、SSOT、セキュリティ等）でレビューし、品質を向上させる。
@@ -69,15 +77,21 @@ AIレビューの振動を防ぐため、レビューと修正は3周以内に�
 # AI駆動開発の実践
 ここからは、実際のAI駆動開発の実践方法を例を交えながら紹介する。
 
+![プランから実装・検証・レビュー・改善へ進む8ステップ](assets/ai-driven-development/development-flow.png)
+
+ステップ4からテストを先に書き、失敗を確認してから実装する。ステップ5では網羅と全通過を確認し、指摘があれば実装へ戻る。
+
 ## 前提
 GitHubのリポジトリを使用していること。各社のAI駆動開発のプラクティスはGitHubによるバージョン管理・AIからの読み取り・ブランチによる開発・レビューの仕組みを前提として作られている。
 
-題材を「CAFに沿ったAzure Platform Landing Zoneの新規構築」にとして例を示す。ルール・レビュー定義・スキル・テスト・プラン・8ステップのプロンプト・チェックリストを一式で示す。
+題材を「CAFに沿ったAzure Platform Landing Zoneの新規構築」として例を示す。ルール・レビュー定義・スキル・テスト・プラン・8ステップのプロンプト・チェックリストを一式で示す。
+
+以降の作成先は、リポジトリのルートからの相対パスで示す。
 
 ## A.1 リポジトリ装置の実物一式
 
 ### A.1.1 エージェント向けREADME（AGENTS.md）
-まずはエージェント用のメインとなるルールファイルを作成する。
+作成先：リポジトリ直下の `AGENTS.md`。技術スタック・構成・コマンド・参照ルールをまとめる。
 
 ```markdown
 # Azure Platform Landing Zone
@@ -89,6 +103,7 @@ CAFに沿った共通基盤を東日本に構築する。管理グループ・Po
 - Terraform 1.12以降と公式AVM（ALZ・Management・Hub-Spoke）、AzureはEA契約
 - GitHub Actions + Bash。認証はユーザー割り当てマネージドIDへのOIDCフェデレーション
 - 単体・結合はTerraform Test、実AzureのE2EはGo＋Terratest＋testifyで記述する。Azureの実値はCLI／APIで確認する
+- E2Eの参照環境：Go 1.23以降、Terratest `v0.48.2`、testify `v1.10.0`
 
 ## ディレクトリ構成
 
@@ -115,12 +130,16 @@ CAFに沿った共通基盤を東日本に構築する。管理グループ・Po
 | `*.tf`、`modules/**`、`lib/**`、`scripts/**`、`.github/workflows/**` | `docs/rules/architecture.md` |
 | `tests/**`、テストの追加・変更 | `docs/rules/testing.md` |
 | プルリクエスト前・レビュー実行時 | `docs/rules/review.md` |
+| `scripts/**`、`.github/workflows/**` | `docs/rules/logging.md` |
+| `*.tf`、`modules/**`、`tests/**`、`scripts/**` | `docs/rules/state.md` |
 
 - ルールと仕様書が矛盾した場合は、推測で進めず作業を止めて矛盾を報告する
 ```
 
+`docs/rules/` のルールは `AGENTS.md` の案内に従って明示的に読む。`paths` は適用対象を示すもので、この配置だけでは自動読込にならない。
+
 ### A.1.2 ルールファイル　－　アーキテクチャ
-次に詳細なルールファイルを作成していく。まずはファイル構成、ファイルごとの責務などのアーキテクチャを定義するルールを作成する。
+作成先：`docs/rules/architecture.md`。ファイル構成、責務の分け方、機能間の依存を決める。
 
 ```markdown
 ---
@@ -172,7 +191,7 @@ paths:
 ```
 
 ### A.1.3 ルールファイル - テスト
-次にテストに関するルールファイルを作成する。
+作成先：`docs/rules/testing.md`。テストの分担、合格条件、試験環境の扱いを決める。
 
 ```markdown
 ---
@@ -250,7 +269,7 @@ test "$(jq -r '.error.code' deny-response.json)" = "RequestDisallowedByPolicy"
 ```
 
 ### A.1.4 ルールファイル - レビュー
-次にレビューのルールファイルを作成する。
+作成先：`docs/rules/review.md`。レビューの観点、指摘の優先度、完了条件を決める。
 
 ```markdown
 ---
@@ -292,7 +311,7 @@ paths:
 ```
 
 ### A.1.5 ルールファイル - ロギング
-次にロギングのルールファイルを作成する。
+作成先：`docs/rules/logging.md`。ログ項目と、秘密値を出力しない規約を決める。
 
 ```markdown
 ---
@@ -338,7 +357,7 @@ log_info "alz.connectExpressRoute" "$run_id"
 ```
 
 ### A.1.6 ルールファイル - Terraform state
-次にデータ関連（今回はstate）のルールファイルを作成する。
+作成先：`docs/rules/state.md`。stateの更新方法と、固定の試験基盤を保護する範囲を決める。
 
 ```markdown
 ---
@@ -371,12 +390,11 @@ paths:
 ```
 
 ### A.1.7 サブエージェント定義の編成一式
-サブエージェントの定義を作成する。
-レビュー等を各観点で実施する場合に指定して使う。
-
-`.claude/agents/`
+Claude Code用のレビュー担当を `.claude/agents/` に置き、観点を分けて呼び出す。
 
 #### プランレビューエージェント
+
+作成先：`.claude/agents/design-reviewer.md`。変更差分がプランの受け入れ条件と一致するか確認する。
 
 ```markdown
 ---
@@ -400,6 +418,8 @@ P2（プラン外だが無害な変更）。各指摘に file:line と根拠を�
 ```
 
 #### テストレビューエージェント
+
+作成先：`.claude/agents/edge-case-reviewer.md`。境界値・異常系とテストの抜けを確認する。
 
 ```markdown
 ---
@@ -425,6 +445,8 @@ P2（防御的な改善提案）。各指摘に file:line と、壊れる入力�
 
 #### セキュリティレビューエージェント
 
+作成先：`.claude/agents/security-reviewer.md`。入力検証・認可・秘密情報の露出を確認する。
+
 ```markdown
 ---
 name: security-reviewer
@@ -441,9 +463,11 @@ tools: Read, Grep, Glob, Bash
 
 
 ### A.1.8 スキルの実例（4本）
-次にスキルの例を以下に示す。
+Claude Code用の作業手順を `.claude/skills/<スキル名>/SKILL.md` に置き、必要な作業で呼び出す。
 
 #### テスト駆動開発の実行手順
+
+作成先：`.claude/skills/tdd/SKILL.md`。テストを1件ずつRed→Green→Refactorで進める。
 
 ```markdown
 ---
@@ -488,6 +512,8 @@ assert削除・skipは「最小実装」ではない。同じ失敗を2回繰り
 
 #### create-pr（PR本文を構造化して投稿する）
 
+作成先：`.claude/skills/create-pr/SKILL.md`。変更内容と検証結果をまとめてPRを作成する。
+
 ```markdown
 ---
 name: create-pr
@@ -520,6 +546,8 @@ description: 実装が一段落したら、PR本文を課題・解決策・テ�
 
 #### eng-practices（外部の定番で自己レビューする）
 
+作成先：`.claude/skills/eng-practices/SKILL.md`。公開されたレビュー基準で自分の差分を点検する。
+
 ```markdown
 ---
 name: eng-practices
@@ -551,6 +579,8 @@ description: PRを出す前に、自分のgit diffをGoogle Engineering Practice
 ```
 
 #### alz-debug-deployment（基盤の配置・試験エラーを調査する）
+
+作成先：`.claude/skills/alz-debug-deployment/SKILL.md`。ActionsとAzureの失敗を調査し、再現テストを添えて直す。
 
 ```markdown
 ---
@@ -609,9 +639,11 @@ poolを再利用せず記録を残し、解決まで復旧対象として扱う�
 
 ### A.2.1 単体テストの実物
 
-単体はTerraform Testのまま、実AzureのE2EをTerratestへ分ける。単体ではAzureを作らず、入力と期待値を確かめる。
+入力と計算結果をTerraform Testで確認する。次の3ファイルに分けて作成する。
 
-AVMを呼ぶルートと、その入力を組み立てる小さなモジュールを分ける。以下はファイルごとの抜粋である。アドレス計算は実装を動かして検証し、期待値は合意したアドレス表を直接書く。公式モジュール内部を再実装するテストは作らない。
+- `main.management.groups.tf`：AVMを呼び出すルート構成。
+- `modules/settings/main.tf`：アドレスの検証とサブネットの計算。
+- `tests/unit/settings.tftest.hcl`：設計どおりの値と、不正入力の拒否を確認するテスト。
 
 ```hcl
 # main.management.groups.tf — 公式AVMを、自分たちのルートから呼ぶ
@@ -680,13 +712,11 @@ run "invalid_cidr_is_rejected" {
 }
 ```
 
-実際のルートでは `module.settings.subnets` をHub-Spoke AVMへ渡す。Spoke・オンプレとの重複、命名、Policyパラメータの変換も同じ形で単体テストする。AVM同士の受け渡しは `tests/integration/` に分け、providerをモックしたplanで検証する。
+AVM間の受け渡しは `tests/integration/` で検証する。
 
 ### A.2.2 E2Eテストの実物
 
-E2EはGoのTerratestとtestifyを使う。Vitestの `test("期待する動作")` はGoの `t.Run("期待する動作", ...)`、`expect(actual).toBe(expected)` は `require.Equal(t, expected, actual)` に対応する。`require` が満たされなければ、そのテストを失敗させる。
-
-最初に共通基盤を1回デプロイし、動作ごとに名前を付けて確認する。TerraformのoutputはAzureへの照会先IDとして使い、Azureから取得した実値を設計値と比べる。以下の3つのGoファイルは同じ `tests/e2e/` パッケージに置く。
+作成先：`tests/e2e/platform_test.go`。Azureの実値と期待値を比較する。`t.Run` がテスト名、`require` が合格条件。
 
 ```go
 // tests/e2e/platform_test.go
@@ -719,7 +749,7 @@ func TestPlatformE2E(t *testing.T) {
 }
 ```
 
-Policyの検証も「操作→結果→assert」を直接書く。この例の試験scopeには、Storageの公開アクセスを拒否するDenyと、診断設定を配置するDINEを割り当てる。期待する割当・定義IDとworkspace IDは、合意したPolicyケースと構成から準備する。
+作成先：`tests/e2e/policy_test.go`。Denyによる拒否と、DINEによる診断設定の自動配置を確認する。
 
 ```go
 // tests/e2e/policy_test.go
@@ -777,15 +807,13 @@ func testDeployDiagnostics(t *testing.T) {
 }
 ```
 
-Denyは、権限不足や入力不正を合格にしないため、許可側の成功と、禁止側の `RequestDisallowedByPolicy`・対象割当ID・定義IDを確認する。ここではTerraform providerが返したエラーのcodeとIDを照合する。割当直後の反映待ちは期限付きで行い、毎回いったん許可状態に戻すことで、前回の成功による差分なしを誤判定しない。DINEは、診断設定の実値が期待するworkspaceを指すまで期限付きで待つ。
+試験用Terraformは `tests/fixtures/storage-policy/` に置く。入力は `public_network_access_enabled`、出力は `diagnostic_target_id`。診断設定はDINEに作らせ、期待するIDは試験設定から渡す。
 
-`tests/fixtures/storage-policy/` は試験用Storageだけを作るTerraform構成で、入力 `public_network_access_enabled` と出力 `diagnostic_target_id` を持つ。診断設定はfixture自身で作らず、DINEに作らせる。Deny・DINEごとに名前を分け、試験対象は当該Policyが適用される専用scopeに配置する。root側の `bastion_subnet_id` も、このサンプルで定義するoutputである。
-
-掲載例はテストの読み方を示す代表ケースで、ALZ全体の試験を網羅した完成プロジェクトではない。管理グループ・RBAC・監視・ネットワークの配置確認、全有効Deny／DenyAction／Modify／Append／DINEの実効性、既存不適合への修復、通信・遮断は、A.3の台帳と対応する `t.Run` を追加する。必須ケースに対応する試験がなければCIを失敗させる。DINEの設定値も、採用したPolicyの要件に合わせて確認項目を追加する。
+A.3の全動作系Policy・修復・配置・権限・通信も試験対象とし、必須ケースの不足はCI失敗とする。
 
 ### A.2.3 テスト基盤の実物
 
-テストを読むために必要な共通処理も示す。`terraformOptions` はstateと入力の指定、`az` はAzure CLI実行だけを担当し、合格条件は各テスト本体に置く。CLIはActionsでログインしたUAMIの認証を利用する。GoのAzure SDK用に別の認証方式を足さない。
+作成先：`tests/e2e/support_test.go`。試験先の確認、state・入力の指定、Azure CLI実行を共通化する。Azure認証はActionsでログインしたUAMIを使う。
 
 ```go
 // tests/e2e/support_test.go
@@ -846,13 +874,15 @@ func az(t *testing.T, args ...string) string {
 }
 ```
 
-試験用の親MG・pool・ID・backend・開通済み回線と、それらを参照するtfvarsは、信頼した固定fixtureと照合してから渡す。`TEST_TFVARS` と `TEST_PROBE_TFVARS` は絶対パス、`TEST_RUN_KEY` はrun ID＋attemptとする。leaseと所有manifestはrunner外に先に保存し、`platform`・`deny`・`dine`等のstate keyを同じrun配下に事前登録する。probeのtfvarsにもrunごとに固有のリソース名を設定する。
+固定fixtureを照合し、runごとのstate key・所有manifestをrunner外へ保存する。tfvarsは絶対パス、probe名はrun固有とし、共有poolは直列化する。
 
-共有poolは直列化し、`t.Parallel()` は使わない。probeは `defer terraform.Destroy` で片付け、ALZ全体は独立cleanup jobで、probe削除→subscription associationの解除を構成変更とapplyで反映→固定subscriptionを退避先へ戻す→rootのdestroy→残存確認の順に回収する。固定fixtureと回線は削除しない。Goのtimeout・runner停止でdeferが動かない場合も、保存したstateとmanifestから回収する。失敗時はpoolを隔離する。
+独立cleanup jobは、probe削除→subscription associationの解除と退避→rootのdestroy→残存確認の順に回収する。固定基盤と回線は保持し、途中停止時もstate・manifestから回収する。失敗したpoolは隔離する。
 
 ### A.2.4 テスト設定の実物
 
-Goモジュールはリポジトリrootに置く。この例はGo 1.23以降、Terratest `v0.48.2`、testify `v1.10.0` のAPIで記述する。初回に `go mod init example.com/alz-tests` と `go get github.com/gruntwork-io/terratest@v0.48.2 github.com/stretchr/testify@v1.10.0` を実行し、`go.mod`・`go.sum` を管理する。Terratestの最新版v2はimport/APIが異なるため、固定した版の例と混ぜない。
+作成先：リポジトリ直下の `go.mod`・`go.sum`。Goの依存を管理する。初回は `go mod init example.com/alz-tests`、続けて `go get github.com/gruntwork-io/terratest@v0.48.2 github.com/stretchr/testify@v1.10.0` を実行する。
+
+作成先：`scripts/test.sh`。単体・結合・実Azure E2Eの実行入口をまとめる。
 
 ```bash
 # scripts/test.sh — 通常実行はAzureへの作成・課金を伴わない
@@ -869,6 +899,8 @@ case "${1:-unit}" in
   *) printf 'usage: %s unit|integration|e2e\n' "$0" >&2; exit 2 ;;
 esac
 ```
+
+作成先：`.github/workflows/test.yml`。各PRで試験と後始末を実行し、最新commitの両方の成功をマージ条件にする。
 
 ```yaml
 # .github/workflows/test.yml — 抜粋。全PRで実行し、最後のcheckを必須にする
@@ -905,11 +937,13 @@ jobs:
         run: test "$E2E" = success && test "$CLEANUP" = success
 ```
 
-`-count=1` は過去の成功結果の再利用を防ぐ。実行中のE2Eを新しいcommitの到着で自動キャンセルせず、最新commitの検証とcleanupが成功した場合だけマージできる。workflow取消・runner障害も独立reconcilerで回収する。1回1万円・主処理4時間＋cleanup2時間は初期の運用案であり、費用・所要時間の保証ではない。必須試験をskipして枠に合わせない。
+取消・runner障害も独立reconcilerで回収する。1回1万円・主処理4時間＋cleanup2時間は初期案で、必須試験をskipして枠に合わせない。
 
-参考：[Terratest公式Azure例（v0.48.2）](https://github.com/gruntwork-io/terratest/blob/v0.48.2/test/azure/terraform_azure_network_example_test.go)、[公式PlanExitCode](https://github.com/gruntwork-io/terratest/blob/v0.48.2/modules/terraform/plan.go)。今回のPolicyケースは自作であり、公式サンプルの転載ではない。掲載した3つのGoファイルはGo 1.23.3でコンパイルを確認済み。実AzureでのE2Eは未実行であり、コンパイル成功と配置・Policyの動作確認は別に記録する。
+Goコードはコンパイル確認済み。実AzureのE2Eは未実行。
 
 ## A.3 プランドキュメントの完全版
+
+作成先：`.claude/plans/platform-landing-zone.md`。要件・設計・テスト・実装順を8項目にまとめ、実装とレビューの共通基準にする。
 
 ```markdown
 # プラン: CAFに沿ったAzure Platform Landing Zoneの新規構築
@@ -1014,6 +1048,8 @@ E2E（Go＋Terratest＋testify、Azure CLI／API）:
 
 ## A.4 8ステップを回すためのプロンプト
 
+以下は各工程でAIへ渡す依頼文。ファイルとして作る必要はなく、対象のプランやコードを指定して使う。
+
 ### A.4.1 1. プランドキュメントの作成（インタビュー式）
 
 ```text
@@ -1100,16 +1136,16 @@ E2E（Go＋Terratest＋testify、Azure CLI／API）:
 
 ## A.5 チェックリスト集
 
-### A.5.1 個人導入のチェックリスト（第7章）
+### A.5.1 個人導入のチェックリスト
 
 - [ ] Git管理を敷いた（git init→初期コミット→リモート作成。.gitignoreに.env・*.tfstate・*.tfstate.*）
 - [ ] AGENTS.md／CLAUDE.mdに地図を書いた（技術スタック・ディレクトリ構成・主要コマンド・ルールへの誘導）
 - [ ] フォルダ構成をAIと相談して決めた（1ファイル1責務・どこに何があるかわかる構成）
-- [ ] ルールファイルを3本置いた（テスト・レビュー・アーキテクチャ。実例は本Appendix）
+- [ ] ルールファイルを置いた（アーキテクチャ・テスト・レビュー・ロギング・state。配置と内容はA.1を参照）
 - [ ] テストが1コマンドで走る（bash scripts/test.sh unit／bash scripts/test.sh e2e。コマンドはルールに記載）
 - [ ] 秘密鍵は自分で管理した（鍵管理サービスか.env。AIに.envを読ませないdeny設定）
 
-### A.5.2 毎タスクのチェックリスト（第7章）
+### A.5.2 毎タスクのチェックリスト
 
 - [ ] プランを書いた（8項目。AIに逆質問させてから）
 - [ ] プランをレビューにかけた（観点別・P0は実装前に反映）
@@ -1119,20 +1155,20 @@ E2E（Go＋Terratest＋testify、Azure CLI／API）:
 - [ ] 実装レビューを別セッションで走らせた（P0/P1ゼロまで。往復は1〜4回で打ち切り）
 - [ ] マージ前に決めたテスト一式を回した
 
-### A.5.3 週次・月次のチェックリスト（第7章）
+### A.5.3 週次・月次のチェックリスト
 
 - [ ] 本番までのX: デプロイ設定とログ基盤に接続したか。「コードは完璧なのに動かない」の原因が式の外に残っていないか
 - [ ] テストの信頼性: スキップ条件と不要なモックをレビューで潰したか。ごまかしの新パターンはルールとスキルに書き足したか
 - [ ] 劣化の追跡: 無限ループが頻発しはじめたらコードベースの劣化を疑う。定期リファクタリングを止めていないか
 - [ ] ルールの鮮度: レビューで同じ指摘が繰り返されたら、ルールファイルへ昇格させたか
 
-### A.5.4 品質が揺れたとき：X→Y→Fの順に疑う（第2〜6章）
+### A.5.4 品質が揺れたとき：X→Y→Fの順に疑う
 
 - [ ] X: コンテキストは劣化していないか（鮮度・必要十分性・一貫性。長すぎるセッション・古い文書・矛盾するルール）
 - [ ] Y: テストは信用できるか（骨抜き・スキップ・網羅の穴）。テストが緑でも守備範囲の外ではないか
 - [ ] F: 最後にモデル設定を疑う（タスクに正解はあるか→安定型/探索型、複雑さ→賢さ。並列に値する箇所か）
 
-### A.5.5 組織導入のチェックリスト（第8章）
+### A.5.5 組織導入のチェックリスト
 
 - [ ] 全社共通ルールに3領域を定めた（本番・機密への書き込み禁止／破壊的コマンドの自律実行禁止／認証情報の隔離）
 - [ ] モデルの認可リストを決めた（能力に加えて、学習利用の有無・保持期間のプライバシー条件）
@@ -1140,3 +1176,4 @@ E2E（Go＋Terratest＋testify、Azure CLI／API）:
 - [ ] 3層レビューをCIで機械化した（テスト＝全コード／AIレビュー＝全PR／人間＝重要箇所。必須チェックとブランチ保護）
 - [ ] コアと非コアの線を引いた（コア＝決済・認証・データ削除・権限は必ず人間レビュー）
 - [ ] パイロットチームから始めた（全社一斉にしない。成功をテンプレート化して横展開）
+
