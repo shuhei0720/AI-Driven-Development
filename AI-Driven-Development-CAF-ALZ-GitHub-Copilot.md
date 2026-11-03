@@ -137,24 +137,6 @@ CAFに沿った共通基盤を東日本に構築する。管理グループ・Po
 - ルールと仕様書が矛盾した場合は、推測で進めず作業を止めて矛盾を報告する
 ```
 
-#### パスに応じたルールの選択
-
-作成先：`.github/instructions/architecture.instructions.md`。`applyTo`に一致するファイルの作業でルール本文を読む。
-
-```markdown
----
-applyTo: "**/*.tf,lib/**,scripts/**,.github/workflows/**"
----
-作業前に docs/rules/architecture.md を読む。
-```
-
-同じ形式で次の入口を作り、対応するルール本文を読むよう記載する。
-
-| 作成先 | `applyTo` | 読む本文 |
-| --- | --- | --- |
-| `.github/instructions/testing.instructions.md` | `tests/**,scripts/test.sh,.github/workflows/**` | `docs/rules/testing.md` |
-| `.github/instructions/review.instructions.md` | `**` | `docs/rules/review.md` |
-
 ### A.1.2 ルールファイル　－　アーキテクチャ
 作成先：`docs/rules/architecture.md`。ファイル構成、責務の分け方、機能間の依存を決める。
 
