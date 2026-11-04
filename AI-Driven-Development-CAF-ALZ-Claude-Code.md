@@ -102,14 +102,17 @@ GitHubのリポジトリを使用していること。各社のAI駆動開発の
 設定漏れや意図しない公開を防ぎ、利用チームが共通の管理・接続・監視機能を使える状態を目指す。
 
 ## ユーザーストーリー
-基盤担当者として、共通基盤を構築し、設定とセキュリティ制御が要件どおり働くことを確認したい。
-環境差による障害や、構成だけでは見つからない制御の不備を防ぐためである。
+基盤担当者として、共通基盤の構築結果と制御の動作を確認したい。
+依存する製品を更新しながら、環境差や手動変更による不備を見逃さず運用するためである。
 
 ## 主要な要件
 - FR-001：管理グループ・Policy・RBAC・監視・共通ネットワークを提供する。
 - FR-002：有効なPolicyによって、禁止・変更・自動配置・既存不適合の修復が働く。
 - FR-003：Spoke間・オンプレ接続はFirewallを経由し、明示的に許可した通信だけを通す。
 - FR-004：名前解決・管理接続・ログ収集を共通基盤として利用できる。
+- FR-005：ALZ標準を土台に、独自Policy・割当・期限付き例外を追加・変更できる。
+- FR-006：モジュール・provider・Policy Libraryの更新を検出し、既存の基盤を安全に更新できる。
+- FR-007：管理対象の構成差異と管理外の追加を定期的に検知し、検査失敗・未実行も異常として扱う。
 
 ## 受け入れ条件
 | ID | 前提（Given） | 操作（When） | 期待結果（Then） |
@@ -118,11 +121,15 @@ GitHubのリポジトリを使用していること。各社のAI駆動開発の
 | P-001 | 対象Policyが有効である | 許可・違反ケースと修復を実行する | 許可操作は成功し、違反操作は対象Policyで拒否される。変更・自動配置・修復の実値も期待どおりになる |
 | N-001 | Spokeとオンプレの試験先が動作している | 許可・非許可の通信を行う | 許可通信は成功し、非許可通信は遮断され、Firewall経由の証跡を確認できる |
 | C-001 | 試験で今回の基盤を作成している | 試験後に後始末する | 今回の作成物だけが削除され、固定の試験基盤と回線が保持される |
+| POL-ADD-001 | ALZ標準と独自の制御がある | 独自Policy・割当・例外を追加する | 意図した対象だけに適用され、既存の制御を損なわず、例外の理由・責任者・期限を確認できる |
+| UPD-001 | 現行版と更新候補がある | 新版の新規構築と旧版からの更新を試す | 要件・Policy・通信が成立し、未承認の削除・置換がなく、再planと後始末まで成功する |
+| DRIFT-001 | 適用済みの構成と検査対象が定義されている | 設定変更・管理外追加・検査不能を起こす | 定めた検知期限内に差異または監視異常を報告し、自動でapplyや基準変更をしない |
 
 ## 前提
 EA契約、新規環境、東日本の単一リージョン。
 公式ALZ標準を基準に、Hub-Spoke・Bastion・ExpressRouteを含める。
 別テナントの専用試験環境と開通済み試験回線を利用する。
+検査対象・周期・検知期限を運用開始前に決め、検査できない対象を正常扱いしない。
 
 ## スコープ外
 アプリケーション開発、サブスクリプション自動払い出し、回線事業者の開通・廃止。
@@ -138,160 +145,159 @@ EA契約、新規環境、東日本の単一リージョン。
 ```markdown
 # Azure Platform Landing Zone
 
-CAFに沿った共通基盤を東日本に構築する。管理グループ・Policy・RBAC・監視と、Firewall・DNS・Bastion・ExpressRouteを含むHub-Spokeを対象とする。本ファイルはAIコーディングエージェント向けの地図である。
+CAFに沿った共通基盤を東日本に構築する。管理グループ・Policy・RBAC・監視と、Firewall・DNS・Bastion・ExpressRouteを含むHub-Spokeを対象とする。
 
 作業前に `docs/requirements/platform-landing-zone.md` を読み、目的と受け入れ条件を確認する。
 
 ## 技術スタック
 
-- Terraform 1.12以降と公式AVM（ALZ・Management・Hub-Spoke）、AzureはEA契約
-- GitHub Actions + Bash。認証はユーザー割り当てマネージドIDへのOIDCフェデレーション
-- 単体・結合はTerraform Test、実AzureのE2EはGo＋Terratest＋testifyで記述する。Azureの実値はCLI／APIで確認する
-- E2Eの参照環境：Go 1.23以降、Terratest `v0.48.2`、testify `v1.10.0`
+- Terraform 1.12以降と公式AVM。AzureはEA契約
+- GitHub Actions + Bash。Azure認証はUAMIへのOIDCフェデレーション
+- 単体はGo＋testify、結合はTerraformの構成検証、実AzureのE2E・更新試験はGo＋Terratest
+- Go 1.23以降、Terratest `v0.48.2`、testify `v1.10.0`を参照版とする
 
 ## ディレクトリ構成
 
-- `main.management.groups.tf`、`main.management.resources.tf`、`main.connectivity.tf` — 責務ごとのAVM呼び出し
-- `modules/settings/` — 命名・アドレス・Policyパラメータの純粋な変換
-- `lib/` — 管理グループ階層・archetype・Policyの定義
-- `scripts/` — 実行制御と共通処理
-- `tests/` — 単体テスト（unit/）、結合テスト（integration/）、実AzureのE2E（e2e/*_test.go）
-- `docs/requirements/` — 目的・対象ユーザー・要件・受け入れ条件
-- `docs/plans/` — 要件をもとにした設計・実装計画
-- `docs/rules/` — 開発ルール。作業前に下表の該当ファイルを読むこと
+- `infra/bootstrap/` — 常設のID・backend等。試験の削除対象から分離
+- `infra/platform/` — 共通基盤を構成するTerraform root
+- `infra/probes/storage-policy/` — Policy試験で作成・削除するTerraform root
+- `lib/` — ALZ形式の独自ライブラリ。標準への追加・差分を管理
+- `environments/production/`・`environments/e2e/` — 入力の`platform.tfvars.json`と`backend.hcl`
+- `tests/unit/`・`tests/e2e/`・`tests/drift/` — 入力契約・実動作・ドリフトの検証
+- `scripts/` — テストや検査を呼ぶ実行入口
+- `.github/workflows/test.yml`・`drift.yml` — PR検証・定期検査、`renovate.json` — 依存更新PR
+- `docs/requirements/`・`docs/plans/`・`docs/rules/` — 要件・設計計画・開発ルール
 
 ## 主要コマンド
 
-- `bash scripts/test.sh unit` / `bash scripts/test.sh e2e` — テスト実行
-- `terraform init -backend=false && terraform validate` — 構成検証
-- `terraform fmt -check -recursive` — フォーマット検査
+- `bash scripts/test.sh unit` / `integration` / `e2e` / `upgrade` — 種別ごとのテスト
+- `bash scripts/drift.sh` — 適用済みの版・入力による読み取り検査
+- `terraform fmt -check -recursive infra` — フォーマット検査
 
 ## 開発ルールの適用
 
-ファイルを読む・変更する・レビューするときは、対象パスに一致するルールを先に読む。
-複数一致した場合はすべて適用する。
+対象に一致するルールを作業前に読む。複数一致した場合はすべて適用する。
 
 | 対象 | 必ず読むルール |
 | --- | --- |
-| `*.tf`、`modules/**`、`lib/**`、`scripts/**`、`.github/workflows/**` | `docs/rules/architecture.md` |
+| `infra/**`、`lib/**`、`environments/**`、`scripts/**`、`.github/workflows/**`、`renovate.json` | `docs/rules/architecture.md` |
 | `tests/**`、テストの追加・変更 | `docs/rules/testing.md` |
-| プルリクエスト前・レビュー実行時 | `docs/rules/review.md` |
+| PR作成前・レビュー時 | `docs/rules/review.md` |
 
-- ルールと仕様書が矛盾した場合は、推測で進めず作業を止めて矛盾を報告する
+ルールと要件が矛盾したら、推測で進めず矛盾を報告する。
 ```
 
-### A.1.2 ルールファイル　－　アーキテクチャ
-作成先：`docs/rules/architecture.md`。ファイル構成、責務の分け方、機能間の依存を決める。
+### A.1.2 ルールファイル — アーキテクチャ
+
+作成先：`docs/rules/architecture.md`。構成・所有範囲・依存関係を決める。
 
 ```markdown
 # architecture
 
-## 構造（どこに何を置くか）
+## 構造
 
-./
-├── main.management.groups.tf    # 管理グループ・Policy・ロールのAVM呼び出し
-├── main.management.resources.tf # Log Analytics等の管理・監視のAVM呼び出し
-├── main.connectivity.tf         # Hub-Spoke・DNS・Gateway等のAVM呼び出し
-├── variables.tf / outputs.tf    # 公開する入力と出力
-├── modules/settings/           # Azureに接続しない入力の変換・検証
-├── lib/                        # 階層・archetype・Policyの定義データ
-└── scripts/lib/                # 実行横断の共通処理のみ
-
-迷ったらこの順で問う：
-
-1. 特定領域の構成 → 対応する `main.<領域>.tf`
-2. どの領域にも属さない基盤 → `scripts/lib/`
-3. 複数機能で共有したい処理 → 安易に共通化せず、まず各機能に置く
+infra/
+  bootstrap/                    # 常設のID・backend等
+  platform/                     # 共通基盤のroot
+    governance.tf               # 管理グループ・Policy・RBAC
+    network.tf                  # 共通ネットワーク
+    monitoring.tf               # 監視・ログ基盤
+    policy_exemptions.tf         # 理由・責任者・期限付き例外
+    providers.tf                # 接続先・provider設定
+    versions.tf                 # Terraform・providerの制約
+    variables.tf                # 入力と検証
+    outputs.tf                  # 外部へ渡す最小限の値
+  probes/storage-policy/        # 試験対象のroot
+lib/
+  policy_definitions/            # 独自Policy
+  policy_set_definitions/        # Initiative
+  policy_assignments/            # 割当
+  archetype_definitions/         # 独自の適用セット
+  archetype_overrides/           # ALZ標準への追加・除去差分
+  architecture_definitions/      # 管理グループと適用セットの対応
+  role_definitions/              # 独自ロールが必要な場合
+environments/                  # production/e2eの入力・backend設定
+tests/                         # unit/e2e/drift
+scripts/                       # 実行・観測・回収の入口
+.github/workflows/              # test.yml・drift.yml
+renovate.json                  # 依存更新PR
 
 ## 1ファイル1責務
 
-- ファイルの担当を一文で言えること。「Hubのネットワーク構成」は合格、「ランディングゾーンまわりの処理いろいろ」は失格
-- ファイルが肥大したら、責務の境界で割る
+- そのファイルの担当を一文で言えること。1リソース1ファイルにはしない
+- 定義や独自処理が増えたら、責務に沿って分ける。単純な設定値の受け渡しだけのモジュールは作らない
+- 入力の制約はvariables.tf、計算は必要な構成内のlocalsに置く
+- リソースの管理はTerraform、Bashは実行・待機・観測・回収に限定する
 
-## 機能境界
+## 所有範囲と依存関係
 
-- AVM内部のリソースへ直接依存しない。公開されたinput・outputを経由する
-  （例：Policyへ渡す監視先IDはManagementの公開outputを使う）
-- workflowに構成定義・Policyロジックを直書きしない。TerraformとGoのテスト、準備・後始末のスクリプトを呼ぶだけにする
-- ALZモジュール全体への安易なdepends_onを避け、公式の依存入力とplan時に確定するIDを使う
+- bootstrap・platform・probesをライフサイクルに応じた別root・別stateで管理する
+- platform内のファイル分割ではstateは分かれない。環境ごと・試験runごとにbackendと入力を分ける
+- 同じリソースを複数stateで管理しない。属性ごとにTerraform/Policyの所有範囲を決め、競合させない。Policy生成物と固定fixtureも所有者を記録する
+- AVMの公開入出力を使い、内部リソースへ直接依存しない。ALZはplan時に確定するIDと対応する_dependencies入力で接続し、module全体へdepends_onを付けない
 
-## 副作用の分離（Functional Core / Imperative Shell）
+## ALZライブラリ
 
-- 命名・アドレス検証・Policyパラメータ変換は、入力だけで結果が決まる処理に集める（Functional Core）
-- Azure API・時刻・乱数・環境変数参照は外側へ置く。
-  Coreが返した結果を実行するだけに近づける（Imperative Shell）
-- 狙いは、複雑なロジックを外部依存なしでテストできる形にすること
+- 標準の参照版を固定し、libには独自資産と差分だけを置く。通常の追加で同名上書きや標準の全コピーをしない
+- フォルダ名は分類用。ALZが識別に使うファイル名末尾とスキーマを守る（例：*.alz_policy_definition.json、*.alz_policy_assignment.json、*.alz_archetype_override.yaml）
+- 1定義・1割当・1archetypeを1ファイルにする。必要な種類のディレクトリだけ作る
+- 定義→割当→archetype/override→architectureを接続する。overrideは新しい名前をarchitectureから参照する
+- 例外リソースはpolicy_exemptions.tfで管理し、対象・理由・責任者・期限を明示する
+
+## 依存更新とドリフト
+
+- providerは各rootの.terraform.lock.hcl、AVMはmoduleのversion、ALZ Libraryは参照版を固定する。lockファイルだけではmoduleは固定されない
+- 更新PRで新版の新規構築と旧版からの更新を検証し、削除・置換・state移行をレビューする。期待値は更新版へ自動追従させない
+- ドリフトは本番に適用済みのcommit・入力・固定版で定期planを行い、JSONのresource_driftも確認する
+- 実効Policy・例外・RBAC・管理外リソースも照合する。対象・周期・期限を定め、失敗・未実行・古い結果を正常扱いしない
+- 検査は読み取り専用。apply・stateへの差分受け入れ・期待値変更は、別のレビューされた変更として行う
 ```
 
-### A.1.3 ルールファイル - テスト
-作成先：`docs/rules/testing.md`。テストの分担、合格条件、試験環境の扱いを決める。
+### A.1.3 ルールファイル — テスト
+
+作成先：`docs/rules/testing.md`。テストの守備範囲と合格条件を決める。
 
 ```markdown
-# 単体/E2Eの切り分けと骨抜き禁止
+# testing
 
-## 種別と実行コマンド
+## 種別と実行
 
-| 種別 | ツール | 置き場所 | 実行 | 何を守るか |
-| --- | --- | --- | --- | --- |
-| 単体 | Terraform Test（純粋処理・必要な境界でmock） | `tests/unit/` | `bash scripts/test.sh unit` | 構成値の境界・不正入力・省略時の動作 |
-| E2E | Go＋Terratest＋testify、Azure CLI／API | `tests/e2e/` | `bash scripts/test.sh e2e` | 実配置・Policy効果・通信・冪等性・後始末 |
+| 種別 | 置き場所 | 実行 | 何を守るか |
+| --- | --- | --- | --- |
+| 単体：Go＋testify | tests/unit/ | bash scripts/test.sh unit | 入力制約・ALZ資産の契約 |
+| 結合：Terraform検査 | infra/の各root | bash scripts/test.sh integration | fmt・validate（実際のplanはE2E・更新試験） |
+| E2E：Terratest＋Azure API | tests/e2e/ | bash scripts/test.sh e2e | 実配置・Policy・権限・通信・再plan・削除 |
+| 更新：Terratest＋Azure API | tests/e2e/ | bash scripts/test.sh upgrade | 新版の新規構築と旧版からの更新 |
+| ドリフト：読み取り検査 | tests/drift/ | bash scripts/drift.sh | 実設定差異・管理外追加・観測失敗 |
 
-- 単体のファイル名は対象の責務を表す（例：`main.connectivity.tf` → `tests/unit/connectivity.tftest.hcl`）
-- E2Eは `tests/e2e/platform_test.go` のように `*_test.go` で置き、`t.Run("期待する動作")` とassertで検証内容を示す
-- E2Eは実行前に固定fixtureの準備と試験テナントへの認証が要る（後述）。各PRで実行し、検証と後始末の成功をマージ条件にする
+## テスト駆動と骨抜き禁止
 
-## 単体とE2Eの切り分け
+- 期待値は要件・承認した構成を出典にする。Terraform outputや取得した実値を、そのまま正解にしない
+- 1件ずつ失敗を確認してから実装する。環境不備や認証失敗を、振る舞いのRedとして数えない
+- 不要な制約をテストのために追加しない。アドレスの重複・包含や、必要な制御を検証する
+- assert削除・skip・常時成功モック・Policy無効化で通さない。E2Eの内部応答はモックしない
+- テスト名とassertから、何をしたらどうなるか読めること
 
-E2Eで検証する：
-- 配置フローの完走（作成→実設定の照合→Policy・通信検証→再plan→削除）
-- 認証・認可とPolicy実効性。有効なDeny・DINE・Modify等の動作する効果はすべて実試験し、許可・拒否・設定追加・修復を照合する。Audit系は割当・パラメータを照合する
-- 複数APIをまたぐ整合動作、状態遷移（作成中→成功/部分失敗）
-- 実APIとの通信を含むフロー（モックしない）
+## 実Azureの合格条件
 
-単体で検証する：
-- 純粋な命名・整形・バリデーション、mockを使う構成検証（AzureへのI/Oなし）
-- E2Eでは網羅しにくい細かい分岐。plan表記だけで外部接続なしと判断しない
+- 全有効Deny/DenyAction/Modify/Append/DINE等をケース台帳と対応づける。必須ケース不足は失敗。Audit系は割当・パラメータを照合する
+- 許可側の成功と、対象Policyによる拒否を対で確認する。権限不足や入力エラーを拒否の成功にしない
+- DINEの新規配置・既存不適合の修復と、必要な権限・配置先の実値を確認する
+- 独自Policyの追加PRには、その正常・違反・修復の該当ケースを含める
+- 更新は同じ要件で現行版と候補版を比較する。未承認の削除・置換を通さず、再planと後始末まで確認する
 
-中間（結合テスト）に落とす：
-- AVM間の受け渡し、Bashの薄い制御、API応答の解析
-- E2Eにするとモックが増えすぎて実装詳細に張り付くケース
+## 試験環境と後始末
 
-## E2Eのシードデータ
+- 別テナントの固定fixtureを照合し、共有poolを排他する。実E2Eは直列化し、t.Parallel()を使わない
+- 試験対象はinfra/probes/で作り、run固有の名前とstateを使う。固定のtenant・subscription・ID・backend・回線は削除しない
+- 作成前にrunner外へstate key・所有記録を保存する。独立cleanupで回収・subscription退避・残存を確認し、失敗したpoolは隔離する
+- 固定sleepではなく期限付きで待つ。最新commitの全必須試験と後始末の成功をPRのマージ条件にする
 
-E2Eは、固定のfixtureを用意した別テナントに対して走らせる。認証できる
-試験用IDと、権限・Policy・通信の違いを確かめるための対象をあらかじめ用意しておく。
+## ドリフト検査の試験
 
-- シードは1つの定義ファイル（例：`tests/fixtures/test-environment.json`）に集約し、
-  テスト内で独自のマジック値を作らない
-- 最低限用意する：試験tenant・親MG・subscription pool・実行用ID・backend、
-  開通済みExpressRoute回線、許可/拒否を確認するIDと通信先
-- 実行の流れ：fixture照合・pool排他取得 → フェデレーション認証 → `bash scripts/test.sh e2e`
-- 読み取り専用のテストは既存fixtureを使う。変更を伴うテストは専用データを作り、
-  後始末する（共有サブスクリプションの配置を同時変更すると他のテストが壊れる）
-
-## 骨抜き禁止
-
-# ✕ 何も守っていない
-test -n "$resource_id"
-# ✕ 常時成功モック（本物が壊れても通る）
-az() { return 0; }
-# ✕ 条件付きスキップ（環境がないと黙って成功扱い）
-[[ -n "${ARM_TENANT_ID:-}" ]] || exit 0
-
-# ☑ 期待値を固定してassertする。許可・拒否の両側を書く
-test "$(jq -r '.id' allow-response.json)" = "$expected_resource_id"
-test "$(jq -r '.error.code' deny-response.json)" = "RequestDisallowedByPolicy"
-
-- E2Eで内部のAPI応答をモックしない（結合を確かめるのがE2Eの仕事）
-- skipや一時的な対象の絞り込みを残したままコミットしない
-- 新規テストは先にRed（失敗）を確認してから実装する
-
-## テストの独立性（並列実行対応）
-
-- 各テストが自分専用のデータを作り、終了時に片付ける
-- 他のテストが作ったデータ・実行順序に依存しない。共有poolの実E2Eは直列化し、`t.Parallel()`を使わない
-- 固定sleepで待たず、`require.Eventually`等で期限付きで配置・Policy評価・修復・通信の成立を待つ
-- 識別にはrun ID・resource ID・Policy IDを優先し、表示名に依存しない
+- 専用試験環境で設定変更・Policy例外追加・管理外追加・権限喪失を起こし、差異または監視異常として検出できることを確認する
+- 通常planの終了コードだけで正常にしない。resource_driftと実設定・台帳も照合する
+- 検査結果の期限超過とjob未実行を、検査jobの外側からも監視する。ドリフト検査で自動applyしない
 ```
 
 ### A.1.4 ルールファイル - レビュー
@@ -331,6 +337,56 @@ test "$(jq -r '.error.code' deny-response.json)" = "RequestDisallowedByPolicy"
 - 差分を読むAIレビューでは、Policyの実効性・経路の取り違え・修復の待ち続けといった実行時のバグは捕まらない。配置や実行時の挙動を変えたら、最後は専用Azure環境で動かして確かめる
 ```
 
+
+### A.1.5 依存更新の設定
+
+作成先：`infra/platform/providers.tf`。ALZ標準の版と、独自ライブラリの場所を指定する（参照版は例）。
+
+```hcl
+provider "alz" {
+  library_references = [
+    { path = "platform/alz", ref = "2026.10.0" },
+    { custom_url = "${path.root}/../../lib" }
+  ]
+}
+```
+
+作成先：`renovate.json`。AVM・providerの更新PRを作り、ALZ Libraryの参照版も検出する。
+
+```json
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "automerge": false,
+  "customManagers": [{
+    "customType": "regex",
+    "managerFilePatterns": ["/^infra\\/platform\\/providers\\.tf$/"],
+    "matchStrings": ["path\\s*=\\s*\"platform/alz\"\\s*,?\\s*ref\\s*=\\s*\"(?<currentValue>[^\"\\r\\n]+)\""],
+    "datasourceTemplate": "github-tags",
+    "depNameTemplate": "Azure/Azure-Landing-Zones-Library",
+    "extractVersionTemplate": "^platform/alz/(?<version>\\d+\\.\\d+\\.\\d+)$"
+  }]
+}
+```
+
+作成先：`.github/workflows/test.yml`。更新PRでも、新版の新規構築と同じstateでの旧版→新版更新を実行する。
+削除・置換・state移行と要件への影響をレビューし、振る舞い・再plan・後始末が通ってからマージする。
+AVMの`version`も明記し、各rootの`.terraform.lock.hcl`をコミットする。
+
+### A.1.6 定期ドリフト検知の設定
+
+作成先：`.github/workflows/drift.yml`。初期案は毎日1回。Azureの検査権限を参照専用とし、差異・検査失敗を通知する。
+
+作成先：`scripts/drift.sh`。最後に本番へ適用した版で、次の検査を順に実行する。
+
+1. デプロイ成功時の記録からcommit・入力・固定版・本番backendを取得する。記録の欠落や不一致は失敗にする。
+2. その版を取得して`init -lockfile=readonly`→`plan -detailed-exitcode -out=drift.tfplan`→`show -json drift.tfplan`を実行する。planの0/2を処理し、1は検査失敗にする。
+3. 終了コード2だけでなく`resource_drift`も確認し、実効Policy・例外・RBAC・経路と管理外の追加を照合する。
+4. 差異・検査不能・対象scopeの欠落を報告する。自動applyやstateへの差分受け入れは行わない。
+
+作成先：`tests/drift/*_test.go`。専用試験環境で手動変更・管理外追加・権限喪失を起こし、検出を確認する。
+Policyが正当に作成・変更する属性は所有記録と照合し、重要な差異を`ignore_changes`で隠さない。
+検査jobとは別の監視で、未実行と最終成功から26時間の超過も通知する（周期・期限は初期案）。
 
 ### A.1.7 サブエージェント定義の編成一式
 
@@ -488,36 +544,48 @@ description: 実装が一段落したら、PR本文を課題・解決策・テ�
 
 ### A.2.1 単体テストの実物
 
-作成先：`tests/unit/settings.tftest.hcl`。アドレス計算と不正入力の拒否を確認する。
+作成先：`tests/unit/network_inputs_test.go`。実際の試験用入力を読み、Hub・Spoke・オンプレのアドレスが重複しないことを確認する（Goの例はimport宣言を省略）。
 
-```hcl
-run "bastion_subnet" {
-  command = plan
-  module { source = "./modules/settings" }
-  assert {
-    condition     = output.subnets.bastion == "10.100.1.0/26"
-    error_message = "Bastionのサブネットは10.100.1.0/26であること。"
-  }
-}
-
-run "prefix_17_is_rejected" {
-  command = plan
-  module { source = "./modules/settings" }
-  variables { hub_cidr = "10.100.0.0/17" }
-  expect_failures = [var.hub_cidr]
+```go
+func TestNetworkInputsDoNotOverlap(t *testing.T) {
+	data, err := os.ReadFile("../../environments/e2e/platform.tfvars.json")
+	require.NoError(t, err)
+	var input struct {
+		HubCIDR    string            `json:"hub_cidr"`
+		SpokeCIDRs map[string]string `json:"spoke_cidrs"`
+		OnpremCIDR string            `json:"onprem_cidr"`
+	}
+	require.NoError(t, json.Unmarshal(data, &input))
+	require.NotEmpty(t, input.SpokeCIDRs)
+	cidrs := []string{input.HubCIDR, input.OnpremCIDR}
+	for _, cidr := range input.SpokeCIDRs {
+		cidrs = append(cidrs, cidr)
+	}
+	var prefixes []netip.Prefix
+	for _, cidr := range cidrs {
+		prefix, err := netip.ParsePrefix(cidr)
+		require.NoError(t, err, cidr)
+		prefixes = append(prefixes, prefix)
+	}
+	for i := range prefixes {
+		for j := i + 1; j < len(prefixes); j++ {
+			require.False(t, prefixes[i].Overlaps(prefixes[j]),
+				"アドレスが重複: %s / %s", cidrs[i], cidrs[j])
+		}
+	}
 }
 ```
 
 ### A.2.2 E2Eテストの実物
 
-作成先：`tests/e2e/platform_test.go`。デプロイ結果と再planの差分を確認する。Goの例はimport宣言を省略している。
+作成先：`tests/e2e/platform_test.go`。実Azureへのデプロイ結果、Policyの動作、再planの差分を確認する。
 
 ```go
 func TestPlatformE2E(t *testing.T) {
 	assertTestTarget(t)
-	opts := terraformOptions(t, "../..", "platform", "TEST_TFVARS")
+	opts := terraformOptions(t, "../../infra/platform", "platform", "TEST_TFVARS")
 	terraform.InitAndApply(t, opts)
-	// ALZ全体の削除は独立cleanup jobが担当する（A.2.4）。
+	// 基盤全体の削除は独立cleanup jobが担当する（A.2.4）。
 
 	t.Run("Bastionのサブネットが設計どおり", func(t *testing.T) {
 		id := terraform.Output(t, opts, "bastion_subnet_id")
@@ -537,15 +605,15 @@ func TestPlatformE2E(t *testing.T) {
 
 ```go
 func testDenyPublicStorage(t *testing.T) {
-	opts := terraformOptions(t, "../fixtures/storage-policy", "deny", "TEST_PROBE_TFVARS")
+	opts := terraformOptions(t, "../../infra/probes/storage-policy", "deny", "TEST_PROBE_TFVARS")
 	opts.Vars = map[string]interface{}{"public_network_access_enabled": false}
-	defer terraform.Destroy(t, opts) // apply前に登録。途中失敗でも後始末する
-	terraform.InitAndApply(t, opts)  // 許可側が成功することを先に確認
+	defer terraform.Destroy(t, opts)
+	terraform.InitAndApply(t, opts) // 許可側が成功することを先に確認
 
 	assignmentID := requiredEnv(t, "PUBLIC_STORAGE_DENY_ASSIGNMENT_ID")
 	definitionID := requiredEnv(t, "PUBLIC_STORAGE_DENY_DEFINITION_ID")
 	require.Eventually(t, func() bool {
-		// Policy反映前に成功しても、次回は許可状態に戻してから再試行する。
+		// Policy反映前に成功しても、許可状態へ戻してから再試行する。
 		opts.Vars["public_network_access_enabled"] = false
 		if _, err := terraform.ApplyE(t, opts); err != nil {
 			return false
@@ -558,10 +626,10 @@ func testDenyPublicStorage(t *testing.T) {
 }
 
 func testDeployDiagnostics(t *testing.T) {
-	opts := terraformOptions(t, "../fixtures/storage-policy", "dine", "TEST_PROBE_TFVARS")
+	opts := terraformOptions(t, "../../infra/probes/storage-policy", "dine", "TEST_PROBE_TFVARS")
 	opts.Vars = map[string]interface{}{"public_network_access_enabled": false}
 	defer terraform.Destroy(t, opts)
-	terraform.InitAndApply(t, opts) // fixtureは診断設定を自分で作らない
+	terraform.InitAndApply(t, opts) // probeは診断設定を自分で作らない
 
 	targetID := terraform.Output(t, opts, "diagnostic_target_id")
 	expected := requiredEnv(t, "EXPECTED_LOG_WORKSPACE_ID")
@@ -576,6 +644,29 @@ func testDeployDiagnostics(t *testing.T) {
 	}, 30*time.Minute, 20*time.Second, "DINEが指定workspace宛ての診断設定を配置すること")
 }
 ```
+
+作成先：`tests/e2e/upgrade_test.go`。旧版から候補版へ同じstateを更新し、削除・再作成なしでPolicyが動き続けることを確認する。
+
+```go
+func TestUpgrade(t *testing.T) {
+	assertTestTarget(t)
+	opts := terraformOptions(t, requiredEnv(t, "BASELINE_TERRAFORM_DIR"), "upgrade", "TEST_TFVARS")
+	terraform.InitAndApply(t, opts)
+	opts.TerraformDir = requiredEnv(t, "CANDIDATE_TERRAFORM_DIR")
+	opts.PlanFilePath = filepath.Join(t.TempDir(), "upgrade.tfplan")
+	plan := terraform.InitAndPlanAndShowWithStruct(t, opts)
+	for address, change := range plan.ResourceChangesMap {
+		require.False(t, change.Change.Actions.Delete() || change.Change.Actions.Replace(), address)
+	}
+	terraform.Apply(t, opts) // 確認したplanを適用
+	opts.PlanFilePath = ""
+	t.Run("更新後もDenyが働く", testDenyPublicStorage)
+	t.Run("更新後もDINEが働く", testDeployDiagnostics)
+	require.Equal(t, 0, terraform.PlanExitCode(t, opts))
+}
+```
+
+CIは旧版・候補版の全体を別worktreeへ取得し、上記2変数に`infra/platform`の絶対パスを設定する（lockファイル・`lib/`を含む）；置換やstate移行が必要な更新は専用の移行試験を追加する。
 
 ### A.2.3 テスト基盤の実物
 
@@ -608,7 +699,7 @@ func terraformOptions(t *testing.T, dir, stateName, varFileEnv string) *terrafor
 		BackendConfig: map[string]interface{}{
 			"key": "e2e/" + requiredEnv(t, "TEST_RUN_KEY") + "/" + stateName + ".tfstate",
 		},
-		Reconfigure: true, NoColor: true, SetVarsAfterVarFiles: true,
+		Reconfigure: true, NoColor: true, SetVarsAfterVarFiles: true, Lock: true,
 	}
 }
 
@@ -629,131 +720,133 @@ func az(t *testing.T, args ...string) string {
 
 </details>
 
-試験用Terraformは`tests/fixtures/storage-policy/`に置き、入力`public_network_access_enabled`と出力`diagnostic_target_id`を用意する。診断設定はDINEに作らせる。
+試験用Terraformは`infra/probes/storage-policy/`に置き、入力`public_network_access_enabled`と出力`diagnostic_target_id`を用意し、診断設定はDINEに作らせる。
 
 ### A.2.4 テストの実行
 
-作成先：`scripts/test.sh`。単体・結合・実Azure E2Eを別コマンドにする。
+作成先：`scripts/test.sh`。単体・結合・実Azure E2E・依存更新を別コマンドにする（planは実Azure試験で確認）。
 
 ```bash
 set -euo pipefail
 case "${1:-unit}" in
-  unit|integration)
-    kind="${1:-unit}"
-    terraform init -backend=false -test-directory="tests/$kind"
-    terraform test -test-directory="tests/$kind" ;;
-  e2e) go test -v -count=1 -parallel=1 -timeout=4h ./tests/e2e ;;
+  unit) go test -v -count=1 ./tests/unit ;;
+  integration)
+    terraform fmt -check -recursive infra
+    for dir in infra/bootstrap infra/platform infra/probes/storage-policy; do
+      terraform -chdir="$dir" init -backend=false
+      terraform -chdir="$dir" validate
+    done ;;
+  e2e) go test -v -count=1 -parallel=1 -timeout=4h -run '^TestPlatformE2E$' ./tests/e2e ;;
+  upgrade) go test -v -count=1 -parallel=1 -timeout=4h -run '^TestUpgrade$' ./tests/e2e ;;
   *) exit 2 ;;
 esac
 ```
 
 Go 1.23・Terratest `v0.48.2`・testify `v1.10.0`を使用し、依存はリポジトリ直下の`go.mod`・`go.sum`で管理する。
 
-CIで試験設定・UAMI認証・pool排他・所有記録を準備し、E2E後は独立jobでprobe削除→subscription退避→基盤削除→残存確認を行う。固定基盤と回線を保持し、最新commitの試験・後始末の成功をマージ条件にする。実AzureのE2Eは未実行。
+CIは絶対パスの入力・backend設定・UAMI認証・pool排他・所有記録を準備し、各実Azure試験の後に独立jobでprobe削除→subscription退避→基盤削除→残存確認を行い、poolを解放してから次の試験を実行する。
+
+固定基盤と回線を保持し、最新commitの試験・後始末の成功をマージ条件にする（実AzureのE2Eは未実行）。
 
 ## A.3 プランドキュメントの完全版
 
-作成先：`docs/plans/platform-landing-zone.md`。要件・設計・テスト・実装順を8項目にまとめる。保存先・読込先はプロンプトで明示する。
+作成先：`docs/plans/platform-landing-zone.md`。要件・設計・テスト・実装順を8項目にまとめる。
 
 ```markdown
-# プラン: CAFに沿ったAzure Platform Landing Zoneの新規構築
+# プラン: Azure共通基盤の構築・継続検証
 
-状態: レビュー中 | 元資料: docs/requirements/platform-landing-zone.md（ヒアリング結果）
+状態: レビュー中 | 元資料: docs/requirements/platform-landing-zone.md
 
 ## 1. 概要
 
-公式AVMを部品として使い、新規のAzure共通基盤を東日本に構築する。
-管理グループ・Policy・RBAC・管理監視・Hub-Spokeネットワークを対象とし、
-構成、CI/CD、テストを自分たちで実装する。ALZ Acceleratorは使わない。
-各PRで実Azureへ構築し、実設定・Policy効果・通信・削除の合格を確認する。
+公式AVMを部品として、管理グループ・Policy・RBAC・監視・共通ネットワークを構築する。
+ALZ Acceleratorは使わず、構成・CI/CD・テストを実装する。
+依存更新と実環境のドリフトも継続して検証する。
 
 ## 2. 背景
 
-共通基盤をTerraformで再現できることと、Policyが実際に働くことが目的である。
-「planが通る」「割当が存在する」だけでは受け入れない。構築の完走をD-001、
-有効なPolicy効果をP-001、許可通信と拒否通信をN-001、後始末をC-001とする。
-EA契約、ユーザー割り当てマネージドIDへのOIDCフェデレーションを使う。
+構築結果と制御の動作を保証し、外部モジュール更新や手動変更による不整合を検出する。
+受け入れ条件はD-001・P-001・N-001・C-001と、POL-ADD-001・UPD-001・DRIFT-001。
+EA契約、UAMIへのOIDCフェデレーション、東日本の単一リージョンを前提とする。
 
 ## 3. 詳細設計
 
-変更するファイル:
+変更するファイル・配置先:
 
-- `main.management.groups.tf` — Azure/avm-ptn-alz/azurerm 0.21.0を呼ぶ。
-  公式ALZ階層とPolicy・ロールを構成し、試験時は専用親MG配下へ配置する。
-- `lib/` — platform/alz 2026.10.0を基準にした階層・archetype・Policy。
-  alz、platform、landingzones、corp、online、local、sandbox、security、
-  management、connectivity、identity、decommissionedを基準とする。
-- `main.management.resources.tf` — Management AVM 0.9.0で管理監視基盤を作る。
-  Management・Connectivity・Identity・Security用サブスクリプションを分ける。
-- `main.connectivity.tf` — Hub-Spoke AVM 0.17.2を呼ぶ。Firewall Standard、
-  Bastion Standard、ErGw1AZ、Private DNS・DNS Private Resolverを構成する。
-- `modules/settings/` — 命名・アドレス・Policyパラメータの純粋な変換。
-- `tests/unit/`、`tests/integration/` — Terraform Test。入力境界とAVMの接続を検証。
-- `tests/e2e/*_test.go` — Go＋Terratest＋testifyでAzure実設定・Policy効果・通信を検証。
-- `tests/support/` — 試験対象の保護とfixture管理。期待値のassertはテスト本体に置く。
-- `scripts/test.sh`、`scripts/cleanup.sh` — 実行の入口、state管理、後始末。
-- `.github/workflows/test.yml` — PR検証と独立cleanup。alz-requiredを必須checkにする。
+- `infra/bootstrap/` — 常設のID・backend等。試験時の削除対象から分離する。
+- `infra/platform/governance.tf` — ALZ AVMで階層・Policy・RBACを構成する。
+- `infra/platform/network.tf` — Hub-Spoke、Firewall、DNS、Bastion、ExpressRoute。
+- `infra/platform/monitoring.tf` — 管理監視基盤と、検査結果の鮮度監視。
+- `infra/platform/policy_exemptions.tf` — 理由・責任者・期限付きの例外。
+- `infra/platform/variables.tf`・`outputs.tf` — 入力検証と必要な出力。
+- `infra/platform/providers.tf`・`versions.tf` — 接続先とTerraform・providerの制約。
+- `infra/probes/storage-policy/` — Policy試験対象だけを作り、別stateで削除する。
+- `environments/production/`・`environments/e2e/` — `platform.tfvars.json`と`backend.hcl`。同じplatformコードを使う。
+- `lib/` — ALZ形式の独自定義・割当・archetype差分・architecture。
+- `tests/unit/*_test.go` — Go＋testifyで入力・ライブラリ資産を検証する。
+- `tests/e2e/`・`tests/drift/` — 構築・更新・振る舞いと、読み取り検査の試験。
+- `scripts/test.sh`・`scripts/drift.sh`・`scripts/cleanup.sh` — 実行・検査・回収の入口。
+- `.github/workflows/test.yml`・`drift.yml`、`renovate.json` — PR検証・定期検査・更新PR。
 
 判断済みの論点:
 
-- リージョンはjapaneast。Hubは10.100.0.0/16、Spokeは10.101.0.0/16と
-  10.102.0.0/16、オンプレはサンプル172.20.0.0/16。実接続前に重複を確認する。
-- Spoke間・オンプレ↔SpokeはFirewall経由。明示的に許可した通信だけを通す。
-  GatewaySubnet・Spokeの経路、BGP伝播、戻り経路とDNS転送を一体で設計する。
-- 開通済み試験ExpressRoute回線を固定fixtureとし、Gateway・Connectionを作り直す。
-  VPN、有償DDoS Network/IP Protectionは初期版で無効にする。
-- 試験は別テナント。サブスクリプション群、実行ID、backend、回線を保持し、
-  今回作るALZだけを削除する。pool leaseで直列化し、実行ごとにstateを分ける。
-- 1回1万円・最長6時間を初期案とし、試行で費用と所要時間を精査する。
+- 1ファイル1責務とし、AVMは直接組み合わせる。設定だけを包む独自モジュールは作らない。
+- platformは一つのrootとし、本番・試験runごとにstateを分離する。固定fixtureは含めない。
+- ALZへはplan時に確定するIDを渡し、公式の依存入力で作成順を制御する。
+- ALZ標準は固定版を参照し、独自資産を別名で追加する。archetype overrideはarchitectureから参照する。
+- providerは各rootのlockファイル、AVMはmoduleのversion、ALZ Libraryは参照版を固定する。
+  `.terraform.lock.hcl`はAVMを固定しない。更新PRで削除・置換・state移行も確認する。
+- Management・Connectivity・Identity・Securityのsubscriptionを分け、公式ALZ階層を基準にする。
+- Firewall Standard、Bastion Standard、ErGw1AZを使う。VPNと有償DDoS Network/IP Protectionは無効。
+- Hubは10.100.0.0/16、Spokeは10.101.0.0/16・10.102.0.0/16、オンプレはサンプル172.20.0.0/16。
+  重複と必要なサブネット条件を検証し、Spoke間・オンプレ接続はFirewall経由の明示許可だけを通す。
+- 別テナントの試験poolを排他利用し、開通済み回線・subscription・ID・backendを保持する。
+  Gateway・Connection等の今回作成物だけを削除する。ALZの削除時移動設定でsubscriptionを退避し、残存を確認する。
+- ドリフト検査は本番へ最後に適用したcommit・入力・固定版で行う。latest mainや更新候補版は使わない。
+  plan・resource_driftとAzureの実効設定・台帳を照合し、差異と観測失敗を分けて報告する。
+  検査でapply・state更新・期待値の自動書換えは行わない。
 
 ## 4. テスト影響範囲
 
-- 公式ライブラリ更新時は全assignment・parameter・reference IDの台帳を更新する。
-  動作するeffectにfixtureが不足したらCIを失敗させる。未試験のまま通さない。
-- ネットワーク変更は経路・DNS・疎通・遮断の既存E2Eを再実行する。
-- cleanup変更は部分失敗・runner停止からの回収と、固定fixture保持にも影響する。
+- Library・独自Policy変更時は割当・parameter・reference IDと必須ケースの対応を確認する。
+- 依存更新では同じ要件を使い、新規構築と旧版から新版への更新の両方を検証する。
+- 経路・DNS・cleanup変更は通信試験、固定fixture保持、部分失敗からの回収も再検証する。
 
 ## 5. 新規テストケース
 
-単体・結合（Terraform Test）:
-
-- 合意したサブネット配置になる。/16の隣の/15・/17、不正CIDRを拒否する。
-- Hub・Spoke・オンプレの重複を拒否し、Policy入力と監視先IDが正しく渡る。
-- Firewall・Bastion・ER GatewayのSKU、有償DDoS無効、VPN無効がplanに現れる。
-
-E2E（Go＋Terratest＋testify、Azure CLI／API）:
-
-- 管理グループ階層、サブスクリプション配置、RBAC、Policy割当・パラメータ、
-  監視・診断設定、ネットワークの実値を仕様と照合する（D-001）。
-- 全Denyで許可側は成功し、禁止側は対象Policyによる拒否になる（P-001）。
-- 全DINEで新規対象への自動配置と、既存不適合の修復後の実値を検証する。
-  Modify等も実際の効果を検証し、Audit系は割当とパラメータを照合する。
-- 両Spokeおよびオンプレ試験端点から、許可通信成功・非許可通信不成立、
-  Firewall経由の証跡、DNS解決・転送、Bastion接続を検証する（N-001）。
-- probe変更を戻した再planが差分なし。部分失敗後も所有リソースを削除し、
-  固定fixtureを保持し、サブスクリプションを退避先へ戻す（C-001）。
+- 入力の不正・アドレス重複・サブネット条件と、AVM間の値の受け渡しを検証する。
+- 階層・subscription配置・RBAC・Policy・監視・ネットワークの実値を要件と照合する（D-001）。
+- 全有効Deny/DenyAction・Modify・Append・DINEの動作を検証する（P-001）。
+  許可・拒否を対にし、DINEは新規自動配置と既存不適合の修復を確認する。Audit系は構成を照合する。
+- 独自Policyの追加・変更・例外と、標準ALZとの衝突・意図しない制御欠落を検出する（POL-ADD-001）。
+- 許可通信・遮断、Firewall経由の証跡、DNS転送・Bastion接続を確認する（N-001）。
+- 再planの差分なし、成功・部分失敗後の回収、固定fixture保持を確認する（C-001）。
+- 新版での新規構築と、旧版を作成したstateを引き継ぐ新版更新を通し、未承認の削除・置換を検出する（UPD-001）。
+- 試験環境で構成変更・Policy例外・管理外リソース追加を起こし、ドリフト検出を確認する。
+  権限不足・API失敗・未実行・結果の期限超過も異常として検出する（DRIFT-001）。
 
 ## 6. 実装順
 
-1. 合格条件とPolicyケース台帳を書く。実Azureで失敗を確認できる試験を先に作る。
-2. アドレス計算・命名: 失敗する単体テスト→最小実装（定型処理はサブエージェント）。
-3. 階層・Policy・RBAC・管理監視: 失敗する結合/E2E→AVMを接続する（中核は主担当）。
-4. Firewall・DNS・Bastion・ExpressRoute: 通信E2E→構成、後始末まで通す（主担当）。
-5. 設計整合・テスト網羅・セキュリティの3担当で独立レビューし、P0/P1を修正する。
+1. 要件とケース台帳を書く。定型的なケース整理はサブエージェントへ委任する。
+2. 入力検証・階層・Policy・監視: 失敗する単体/結合/E2E→最小の構成（主担当）。
+3. ネットワーク・独自Policy: 失敗する通信/制御試験→構成、回収まで通す（主担当）。
+4. 旧版→新版更新と意図的なドリフトの失敗試験→更新・監視フローを実装する（主担当）。
+5. 設計・テスト・セキュリティの独立レビューでP0/P1を修正する。
 
 ## 7. コミット前テスト実行
 
-- `terraform fmt -check -recursive` / `terraform validate` — フォーマットと構成検証。
+- `terraform fmt -check -recursive`と各rootの`terraform validate`。
 - `bash scripts/test.sh unit` / `bash scripts/test.sh integration` — 全単体・結合。
-- `bash scripts/test.sh e2e` — 内部で `go test -v -count=1 -parallel=1 -timeout=4h ./tests/e2e` を実行。
-  専用試験環境で全E2Eを確認し、CIの独立cleanup成功も必須。
-  ローカルの未実行・途中取消を合格として扱わない。
+- `bash scripts/test.sh e2e` / `bash scripts/test.sh upgrade` — 実Azureでの構築・更新・振る舞い。
+- `bash scripts/drift.sh` — 読み取り専用の検査。検出機構の故障試験は専用試験環境だけで行う。
+- 各PRの最新commitで必須試験と独立cleanupが成功してからマージする。未実行を合格にしない。
+  1回1万円・主処理4時間＋cleanup2時間は初期案。更新試験を含む費用・時間はpilotで見直す。
 
 ## 8. スコープ外
 
-- アプリケーションの実装、サブスクリプション自動払い出し、ALZ Accelerator。
+- アプリケーション開発、subscription自動払い出し、ALZ Accelerator。
 - 複数リージョン、VPN、有償DDoS、Firewall Premium機能。
-- 回線事業者の開通・廃止作業と、固定fixtureの削除。
+- 固定fixtureの削除、回線事業者の開通・廃止、ドリフト検査による自動修復。
 ```
 
 ## A.4 8ステップを回すためのプロンプト
@@ -846,3 +939,4 @@ docs/plans/[プランファイル].md の実装順に従って実装すること
 
 
 公式仕様：[指示・ルール](https://code.claude.com/docs/en/memory)／[サブエージェント](https://code.claude.com/docs/en/sub-agents)／[スキル](https://code.claude.com/docs/en/skills)。モデル・権限は利用環境側で設定する。
+
